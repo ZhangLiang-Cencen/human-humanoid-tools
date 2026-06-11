@@ -1,0 +1,37 @@
+# Example user-defined alias map.
+#
+# Place YAML files in this directory to define custom joint-name mappings for
+# rigs that are not auto-detected.  Each file should be a flat mapping:
+#
+#     source_joint_name: canonical_joint_name
+#
+# Canonical names are defined in configs/skeleton_presets/canonical_human.yaml:
+#   hips, spine, chest, neck, head,
+#   left_shoulder, left_elbow, left_wrist,
+#   right_shoulder, right_elbow, right_wrist,
+#   left_hip, left_knee, left_ankle,
+#   right_hip, right_knee, right_ankle
+#
+# Only list joints that need renaming — unmapped joints keep their original
+# names.  The file stem (e.g. "my_rig") becomes the alias-map identifier.
+#
+# Delete or rename this file — filenames starting with "_" are ignored by the
+# loader to avoid accidental activation of examples.
+#
+# MyHips: hips
+# MySpine: spine
+# MyChest: chest
+# MyNeck: neck
+# MyHead: head
+# MyLeftUpperArm: left_shoulder
+# MyLeftLowerArm: left_elbow
+# MyLeftHand: left_wrist
+# MyRightUpperArm: right_shoulder
+# MyRightLowerArm: right_elbow
+# MyRightHand: right_wrist
+# MyLeftUpperLeg: left_hip
+# MyLeftLowerLeg: left_knee
+# MyLeftFoot: left_ankle
+# MyRightUpperLeg: right_hip
+# MyRightLowerLeg: right_knee
+# MyRightFoot: right_ankle

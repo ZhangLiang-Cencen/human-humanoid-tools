@@ -1,0 +1,45 @@
+# Canonical hhtools human skeleton.
+# This is the semantic set of joints that every retargeting IK map references. Robot presets
+# declare a mapping from these names to URDF link names.
+
+joints:
+  - name: hips
+    parent: null
+  - name: spine
+    parent: hips
+  - name: chest
+    parent: spine
+  - name: neck
+    parent: chest
+  - name: head
+    parent: neck
+  - name: left_shoulder
+    parent: chest
+  - name: left_elbow
+    parent: left_shoulder
+  - name: left_wrist
+    parent: left_elbow
+  - name: right_shoulder
+    parent: chest
+  - name: right_elbow
+    parent: right_shoulder
+  - name: right_wrist
+    parent: right_elbow
+  - name: left_hip
+    parent: hips
+  - name: left_knee
+    parent: left_hip
+  - name: left_ankle
+    parent: left_knee
+  # Optional toe / ball target: drives foot yaw in IK when mapped; also
+  # draws ankle→toe on the scaled skeleton preview when the source has toes.
+  - name: left_foot
+    parent: left_ankle
+  - name: right_hip
+    parent: hips
+  - name: right_knee
+    parent: right_hip
+  - name: right_ankle
+    parent: right_knee
+  - name: right_foot
+    parent: right_ankle

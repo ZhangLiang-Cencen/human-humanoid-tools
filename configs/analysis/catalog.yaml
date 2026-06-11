@@ -1,0 +1,240 @@
+# UI metadata for Dataset Visualization & Analysis (标签 / 指标说明).
+# Consumed by GET /api/dataset/catalog and the dataset_viz.js info panel.
+
+stages:
+  I:
+    title: "Stage I · 物理可行 / 行为标签"
+    desc: "基于规则与阈值的 clip 级标签；仅打标，不自动剔除数据。"
+  explore:
+    title: "探索性指标分布（L0 标量）"
+    desc: "单个标量指标在全库上的 1D 分布；框选 bin 可刷选下方语义散点。"
+  II:
+    title: "Stage II · 语义 embedding 散点"
+    desc: "档A=手工特征 z-score 后 PCA/UMAP 降维；X/Y 为语义维 1/2，反映行为相似性。"
+    cluster_note: "散点颜色 = embedding 空间聚类 ID（HDBSCAN/KMeans，与降维前的向量同源）。"
+  clustering:
+    title: "Embedding 聚类"
+    desc: "对每个 clip 的 embedding 向量做无监督聚类，结果写入 cluster_id；散点颜色与此一致。"
+    algorithm: "优先 HDBSCAN（min_cluster_size≈N/50，标签 −1=噪声）；未安装时用 KMeans（k≈√(N/2)）。"
+    handcrafted_inputs: "complexity、joint_kinetic_energy、joint_accel_energy、root_speed_xy、root_speed_xy_p95、root_speed_z、root_turn_rate、com_height_std、com_height_range、airborne_ratio、path_efficiency、step_freq、leg_energy、arm_energy、inverted_ratio（共 15 维，全库 z-score）"
+  III:
+    title: "Stage III · 子集推荐（Global Weighted FPS）"
+    desc: "在已筛选 clip 中推荐 K% 个既多样又偏复杂的训练子集；滑块实时高亮推荐点，非删除过滤。"
+
+data_sources:
+  human: "人体源轨迹：AMASS / LAFAN / OMOMO / parc_ms / holosoma / BVH / GLB / FBX / NPZ / PKL / NPY（由 dataset adapter 识别）"
+  robot: "机器人 retarget 轨迹 CSV（root + 关节角）；L2 脚部位姿需 FK，可能降级"
+  mixed: "同一目录可混合人体与机器人，embedding 在 canonical 空间可比"
+  note: "分析的是源轨迹（含物体/地形 sidecar），不会移动或删除源文件"
+
+tags:
+  quality_ok:
+    title: quality_ok
+    group: 质量带
+    desc: "物理质量 S_phy ≥ warn 阈值，无明显 floating/穿透/脚滑等问题。"
+    formula: "S_phy = 100 − Σ(权重 × 严重度)；默认 warn_below=90"
+  quality_warn:
+    title: quality_warn
+    group: 质量带
+    desc: "70 ≤ S_phy < 90，存在中等程度物理异常，建议人工复核。"
+    formula: "六项惩罚：floating / penetration / vel_violation / foot_slide / jerk / self_collision"
+  quality_bad:
+    title: quality_bad
+    group: 质量带
+    desc: "S_phy < 70，floating/穿透/速度违规等较严重；仅作标签，不自动剔除。"
+    formula: "有 terrain 时用 heightfield 修正 foot 相关惩罚项"
+  static:
+    title: static
+    group: 动态带
+    desc: "复杂度 C(x) 处于全库最低分位（≈25%），整体几乎不动。"
+    formula: "C(x) = mean(‖q̇‖² + λ‖q̈‖²)，相对全库分位数"
+  low_dynamic:
+    title: low_dynamic
+    group: 动态带
+    desc: "低动态：C(x) 低于中位，动作幅度小。"
+    formula: "相对全库 dynamics_quantiles"
+  mid_dynamic:
+    title: mid_dynamic
+    group: 动态带
+    desc: "中等动态，日常行走/一般动作。"
+    formula: "C(x) 介于 25%–75% 分位"
+  high_dynamic:
+    title: high_dynamic
+    group: 动态带
+    desc: "高动态：跑跳、大幅度肢体运动。"
+    formula: "C(x) ≥ 75% 分位"
+  burst:
+    title: burst
+    group: 动态带
+    desc: "爆发式：高复杂度且加速度能量高于 75% 分位。"
+    formula: "complexity ≥ q95 且 joint_accel_energy > 75% 分位"
+  in_place:
+    title: in_place
+    group: 行为
+    desc: "root 水平速度 < static_root_speed_mps（默认 0.15 m/s），原地活动。"
+    formula: "mean(root_speed_xy) < 阈值"
+  locomotion:
+    title: locomotion
+    group: 行为
+    desc: "有明显位移的 locomotion（走/跑等）。"
+    formula: "root_speed_xy ≥ static_root_speed_mps"
+  turning:
+    title: turning
+    group: 行为
+    desc: "原地但 root 角速度高，转体/旋转。"
+    formula: "root_turn_rate > 1 rad/s 且 in_place"
+  leg_static:
+    title: leg_static
+    group: 行为
+    desc: "腿关节动能处于全库最低 15% 分位，基本不动腿。"
+    formula: "leg_energy ≤ quantile(15%)"
+  jump:
+    title: jump
+    group: 行为
+    desc: "双脚同时离地比例高（跳跃/腾空）。"
+    formula: "airborne_ratio > jump_airborne_ratio（默认 12%）"
+  flip:
+    title: flip
+    group: 行为
+    desc: "躯干 up-vector 与 +Z 夹角过大或 inverted_ratio > 5%。"
+    formula: "tilt > inverted_angle_deg 或 max_torso_tilt > 120°"
+  has_object:
+    title: has_object
+    group: 场景
+    desc: "clip 携带 SceneObject（如 OMOMO 交互物体）。"
+    formula: "motion.objects 非空"
+  interaction:
+    title: interaction
+    group: 场景
+    desc: "手-物体最近距离 < 0.2 m 的帧占比 > 10%。"
+    formula: "hand_object_contact_ratio > 0.1"
+  has_terrain:
+    title: has_terrain
+    group: 场景
+    desc: "clip 携带 TerrainHeightfield（parc_ms / holosoma 等）。"
+    formula: "motion.terrain 非空"
+  parkour:
+    title: parkour
+    group: 场景
+    desc: "地形高度差 > 0.2 m，台阶/跑酷类环境。"
+    formula: "terrain_height_range > 0.2"
+
+metrics:
+  complexity:
+    title: 运动复杂度 C(x)
+    unit: "（无量纲）"
+    formula: "mean_t( ‖q̇‖² + λ‖q̈‖² )，λ=0.1"
+    desc: "LIMMT 动态复杂度；越高越适合作为训练高价值样本。"
+  s_phy:
+    title: 物理质量 S_phy
+    unit: "0–100"
+    formula: "100 − Σ weight_i × severity_i"
+    desc: "Stage I 质量门禁分数；越低惩罚项越严重。"
+  joint_kinetic_energy:
+    title: 关节动能
+    unit: "(m/s)² 或 (rad/s)²"
+    formula: "mean(‖v_joint‖²)"
+    desc: "全关节线速度（或 DOF 速度）平方均值。"
+  joint_accel_energy:
+    title: 关节加速度能量
+    unit: "(m/s²)²"
+    formula: "mean(‖a_joint‖²)"
+    desc: "加速度平方均值；burst 标签参考。"
+  root_speed_xy:
+    title: root 水平速度
+    unit: m/s
+    formula: "mean(‖v_root,xy‖)"
+    desc: "骨盆/基座 XY 平面速度；locomotion 判据。"
+  root_speed_z:
+    title: root 竖直速度
+    unit: m/s
+    formula: "mean(|v_root,z|)"
+    desc: "跳跃/垂直运动强度。"
+  root_turn_rate:
+    title: root 角速度
+    unit: rad/s
+    formula: "quat 有限差分角速度均值"
+    desc: "转体/旋转强度。"
+  com_height_range:
+    title: COM 高度变化
+    unit: m
+    formula: "max(z_root) − min(z_root)"
+    desc: "root Z 极差，近似 COM 高度变化。"
+  airborne_ratio:
+    title: 腾空比例
+    unit: "0–1"
+    formula: "双脚均高于 floating_height 的帧占比"
+    desc: "跳跃/飞行片段检测。"
+  path_efficiency:
+    title: 路径效率
+    unit: "0–1"
+    formula: "位移 / 路径长度"
+    desc: "1=直线；低值表示绕圈/来回。"
+  step_freq:
+    title: 步频
+    unit: Hz
+    formula: "触地上升沿计数 / duration"
+    desc: "每秒步数估计。"
+  leg_energy:
+    title: 腿能量
+    unit: "(m/s)²"
+    formula: "canonical 腿关节速度平方和均值"
+    desc: "leg_static 相对分位参考。"
+  arm_energy:
+    title: 臂能量
+    unit: "(m/s)²"
+    formula: "canonical 臂关节速度平方和均值"
+    desc: "上肢动态强度。"
+  inverted_ratio:
+    title: 翻转比例
+    unit: "0–1"
+    formula: "torso tilt > inverted_angle 的帧占比"
+    desc: "倒立/大幅倾斜片段。"
+  max_torso_tilt_deg:
+    title: 最大躯干倾角
+    unit: deg
+    formula: "max(angle(up_body, +Z))"
+    desc: "flip 标签辅助。"
+  duration_s:
+    title: 时长
+    unit: s
+    formula: "(num_frames−1) / fps"
+    desc: "clip 持续时间。"
+  terrain_height_range:
+    title: 地形高差
+    unit: m
+    formula: "max(hf) − min(hf)"
+    desc: "L2：heightfield 高度极差。"
+  terrain_roughness:
+    title: 地形粗糙度
+    unit: m
+    formula: "mean(|∇hf|)"
+    desc: "L2：梯度幅值均值。"
+  hand_object_min_dist:
+    title: 手-物最近距离
+    unit: m
+    formula: "min_t dist(wrist, object)"
+    desc: "L1：交互接近程度。"
+
+categories:
+  cluster_id:
+    title: 聚类 ID
+    desc: "在 Stage II embedding 向量（非 2D 散点坐标）上做无监督聚类；与散点图节点颜色同源。"
+    formula: "HDBSCAN 或 KMeans → 整数标签；HDBSCAN 中 −1 表示噪声/离群 clip。"
+    detail: "档A 输入为 15 个 L0 行为指标（复杂度、关节动能/加速度、root 速度/转角、COM 高度、腾空比、路径效率、步频、腿/臂能量、翻转比等），经 log1p 与全库 z-score 后拼接为 embedding，再聚类。"
+  folder_label:
+    title: 数据集目录
+    desc: "scan_library 识别的 folder_label（如 AMASS / OMOMO / holosoma）。"
+  quality_band:
+    title: 质量带
+    desc: "quality_ok / quality_warn / quality_bad 三档。"
+  dynamics_band:
+    title: 动态带
+    desc: "static / low / mid / high_dynamic 相对分位。"
+  source_kind:
+    title: 来源类型
+    desc: "human 或 robot。"
+
+manifest:
+  title: 训练 manifest
+  desc: "导出当前选中 clip 的路径、标签与指标清单，供 batch retarget / 模仿学习 pipeline 复现与溯源；不移动源文件。"

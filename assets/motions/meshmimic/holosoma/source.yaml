@@ -1,0 +1,163 @@
+# meshmimic/holosoma source manifest
+# Shared by every clip under meshmimic/holosoma/*/, so each clip folder
+# only needs {joint_positions.npy, terrain.obj}. The hhtools meshmimic-holosoma
+# adapter reads this file to resolve the skeleton topology, framerate, and
+# coordinate conventions of the joint_positions.npy in every sibling clip.
+
+schema_version: 1
+source: holosoma
+source_url: https://github.com/HumanoidTeam/holosoma
+source_license: Apache-2.0 (holosoma code); motion data derives from holosoma climb demo bundle
+task: climbing / parkour (human + static terrain)
+
+# Every clip folder under meshmimic/holosoma/<clip>/ is expected to contain:
+#   <clip>/<clip>.npy     – (T, 53, 3) float32, world-frame global joint positions
+#   <clip>/terrain.obj    – static rigid triangle mesh, same world frame as motion
+# The same-name convention (clip-folder matches npy stem) mirrors the layout used
+# by hhtools' existing intermimic/OMOMO/<clip>/<clip>.pkl adapter, so the viewer's
+# library scan turns each clip into one clean UI entry named "holosoma · <clip>".
+clip_layout:
+  motion_file_glob: "{clip}.npy"
+  terrain_file: terrain.obj
+
+coordinate_system:
+  up_axis: Z
+  forward: +X
+  units: meters
+
+framerate:
+  raw_hz: 120                                 # original mocap framerate before any downsampling
+  recommended_downsample: 4                   # matches holosoma robot_retarget default stride
+  recommended_retarget_fps: 30                # raw_hz / recommended_downsample
+
+# MOCAP_DEMO_JOINTS (holosoma mocap preset): 53 joints, SMPL-H-like with
+# every finger bone broken out and an extra heel/sole point per foot
+# (*FootMod) used by the interaction-mesh Laplacian to get a
+# heel-ankle-forefoot triangle per foot.
+#
+# joint_names[i] has parent joint_names[parent_indices[i]].
+# parent_indices[0] == -1 marks the root.
+skeleton:
+  name: mocap_demo_joints_v1
+  num_joints: 53
+  root_index: 0
+  joint_names:
+    - Hips                  #  0
+    - Spine                 #  1
+    - Spine1                #  2
+    - Neck                  #  3
+    - Head                  #  4
+    - LeftShoulder          #  5
+    - LeftArm               #  6
+    - LeftForeArm           #  7
+    - LeftHand              #  8
+    - LeftHandThumb1        #  9
+    - LeftHandThumb2        # 10
+    - LeftHandThumb3        # 11
+    - LeftHandIndex1        # 12
+    - LeftHandIndex2        # 13
+    - LeftHandIndex3        # 14
+    - LeftHandMiddle1       # 15
+    - LeftHandMiddle2       # 16
+    - LeftHandMiddle3       # 17
+    - LeftHandRing1         # 18
+    - LeftHandRing2         # 19
+    - LeftHandRing3         # 20
+    - LeftHandPinky1        # 21
+    - LeftHandPinky2        # 22
+    - LeftHandPinky3        # 23
+    - RightShoulder         # 24
+    - RightArm              # 25
+    - RightForeArm          # 26
+    - RightHand             # 27
+    - RightHandThumb1       # 28
+    - RightHandThumb2       # 29
+    - RightHandThumb3       # 30
+    - RightHandIndex1       # 31
+    - RightHandIndex2       # 32
+    - RightHandIndex3       # 33
+    - RightHandMiddle1      # 34
+    - RightHandMiddle2      # 35
+    - RightHandMiddle3      # 36
+    - RightHandRing1        # 37
+    - RightHandRing2        # 38
+    - RightHandRing3        # 39
+    - RightHandPinky1       # 40
+    - RightHandPinky2       # 41
+    - RightHandPinky3       # 42
+    - LeftUpLeg             # 43
+    - LeftLeg               # 44
+    - LeftFoot              # 45
+    - LeftToeBase           # 46
+    - RightUpLeg            # 47
+    - RightLeg              # 48
+    - RightFoot             # 49
+    - RightToeBase          # 50
+    - LeftFootMod           # 51  (heel / sole marker on LeftFoot, used by Laplacian)
+    - RightFootMod          # 52  (heel / sole marker on RightFoot, used by Laplacian)
+  parent_indices:
+    - -1                    # 0  Hips -> root
+    -  0                    # 1  Spine -> Hips
+    -  1                    # 2  Spine1 -> Spine
+    -  2                    # 3  Neck -> Spine1
+    -  3                    # 4  Head -> Neck
+    -  2                    # 5  LeftShoulder -> Spine1
+    -  5                    # 6  LeftArm -> LeftShoulder
+    -  6                    # 7  LeftForeArm -> LeftArm
+    -  7                    # 8  LeftHand -> LeftForeArm
+    -  8                    # 9  LeftHandThumb1 -> LeftHand
+    -  9                    # 10 LeftHandThumb2
+    - 10                    # 11 LeftHandThumb3
+    -  8                    # 12 LeftHandIndex1 -> LeftHand
+    - 12                    # 13 LeftHandIndex2
+    - 13                    # 14 LeftHandIndex3
+    -  8                    # 15 LeftHandMiddle1 -> LeftHand
+    - 15                    # 16
+    - 16                    # 17
+    -  8                    # 18 LeftHandRing1 -> LeftHand
+    - 18                    # 19
+    - 19                    # 20
+    -  8                    # 21 LeftHandPinky1 -> LeftHand
+    - 21                    # 22
+    - 22                    # 23
+    -  2                    # 24 RightShoulder -> Spine1
+    - 24                    # 25 RightArm
+    - 25                    # 26 RightForeArm
+    - 26                    # 27 RightHand
+    - 27                    # 28 RightHandThumb1
+    - 28                    # 29
+    - 29                    # 30
+    - 27                    # 31 RightHandIndex1
+    - 31                    # 32
+    - 32                    # 33
+    - 27                    # 34 RightHandMiddle1
+    - 34                    # 35
+    - 35                    # 36
+    - 27                    # 37 RightHandRing1
+    - 37                    # 38
+    - 38                    # 39
+    - 27                    # 40 RightHandPinky1
+    - 40                    # 41
+    - 41                    # 42
+    -  0                    # 43 LeftUpLeg -> Hips
+    - 43                    # 44 LeftLeg
+    - 44                    # 45 LeftFoot
+    - 45                    # 46 LeftToeBase
+    -  0                    # 47 RightUpLeg -> Hips
+    - 47                    # 48 RightLeg
+    - 48                    # 49 RightFoot
+    - 49                    # 50 RightToeBase
+    - 45                    # 51 LeftFootMod -> LeftFoot
+    - 49                    # 52 RightFootMod -> RightFoot
+
+terrain:
+  kind: static rigid triangle mesh (axis-aligned boxes / climbing obstacles)
+  frame: world (identical origin/axes/scale as joint_positions)
+
+# rotations_source documents that joint_positions.npy carries ONLY global
+# positions; the meshmimic-holosoma adapter reconstructs a per-joint quaternion
+# via a twist-free look-at from parent->child direction (twist = 0 by
+# convention) so that the unified Motion NPZ still carries the usual
+# `quaternions` field. Downstream consumers can check
+# meta.rotations_source == "inferred_lookat" to know they are reconstructed.
+rotations_source: inferred_lookat

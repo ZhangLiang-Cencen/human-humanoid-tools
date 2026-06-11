@@ -1,0 +1,150 @@
+# Robot preset template — copy this directory to configs/robots/<your_name>/ and edit.
+#
+# Web UI uploads auto-generate robot.yaml via scaffold (keyword + topology
+# inference).  Use this template when you hand-author a bundled preset, or
+# after scaffold as a checklist.  Always run:
+#
+#   hhtools robot validate <name>
+#   hhtools robot validate <name> --fix   # auto-repair ik_map where possible
+#
+# Then calibrate in the Web UI (one file per motion reference, e.g.
+# retarget_calibration_soma_bvh.yaml).
+
+name: "<your_robot_name>"
+display_name: "<Pretty Robot Name>"
+urdf: "robot.urdf"                     # relative to this robot.yaml
+mesh_search_paths:
+  - "meshes"
+
+length_scale: 1.0
+up_axis: Z
+forward_axis: X
+
+# CSV export / retarget joint order.  List every actuated revolute joint in
+# the order you want downstream controllers to consume.  Empty = loader
+# derives from URDF walk order (fragile across URDF edits).
+dof_order:
+  - <joint_1>
+  - <joint_2>
+
+# Canonical human joint → URDF link mapping.
+#
+# Rules that prevent the most common retarget failures (see unitree_g1 preset):
+#
+# 1. **3-DOF gimbals (hip / shoulder pitch–roll–yaw chains)**
+#    Map ``left_shoulder`` / ``left_hip`` to the *middle* link (usually
+#    ``*_roll_link``), NOT pitch or yaw ends.  A single IK target on the
+#    wrong link over-constrains or under-constrains the chain → hip_yaw drift,
+#    twisted arms.  Pair with ``smooth_joint_filter_masks`` below.
+#
+# 2. **Trunk**
+#    Prefer *only* ``chest`` when the torso has ≤2 DOFs, or when spine and
+#    chest would point at the same link.  Do not map both ``spine`` and
+#    ``chest`` to one link — IK chatter when source Spine1 ≠ Chest.
+#
+# 3. **No wrist joint**
+#    Map ``left_wrist`` to the distal forearm link (e.g. ``*_elbow_yaw_link``).
+#    Omit only if the robot truly has no arm chain past the elbow.
+#
+# 4. **Ankle**
+#    Prefer ``*_ankle_roll_link`` or foot link (distal in the leg chain).
+#
+# Optional slots (neck, head, spine) may be omitted on mini humanoids.
+ik_map:
+  hips:           <pelvis_or_base_link>
+  # spine:        <omit unless robot has a distinct mid-spine DOF>
+  chest:          <torso_link>
+  # neck:         <neck_link>
+  # head:         <head_link>
+  left_shoulder:  <left_*_roll_link>    # middle of 3-DOF shoulder gimbal
+  left_elbow:     <left_elbow_link>
+  left_wrist:     <left_wrist_or_distal_forearm_link>
+  right_shoulder: <right_*_roll_link>
+  right_elbow:    <right_elbow_link>
+  right_wrist:    <right_wrist_or_distal_forearm_link>
+  left_hip:       <left_*_roll_link>    # middle of 3-DOF hip gimbal
+  left_knee:      <left_knee_link>
+  left_ankle:     <left_ankle_roll_link>
+  right_hip:      <right_*_roll_link>
+  right_knee:     <right_knee_link>
+  right_ankle:    <right_ankle_roll_link>
+
+# IK weights — separate translation (t_*) and rotation (r_*).
+#
+# Starting point (tune per robot after first retarget):
+#   * Strong t on hips + ankles (world anchors / ground contact).
+#   * Weak r (0.1–0.2) on shoulders + hips when using roll-link gimbal targets.
+#   * Balanced t/r on elbows, knees, wrists (1-DOF joints).
+weights:
+  t_weight:
+    hips: 10.0
+    chest: 0.5
+    left_shoulder: 0.5
+    left_elbow: 1.0
+    left_wrist: 1.0
+    right_shoulder: 0.5
+    right_elbow: 1.0
+    right_wrist: 1.0
+    left_hip: 0.5
+    left_knee: 1.0
+    left_ankle: 2.0
+    right_hip: 0.5
+    right_knee: 1.0
+    right_ankle: 2.0
+  r_weight:
+    hips: 2.0
+    chest: 0.5
+    left_shoulder: 0.1
+    left_elbow: 0.5
+    left_wrist: 0.5
+    right_shoulder: 0.1
+    right_elbow: 0.5
+    right_wrist: 0.5
+    left_hip: 0.2
+    left_knee: 0.5
+    left_ankle: 1.0
+    right_hip: 0.2
+    right_knee: 0.5
+    right_ankle: 1.0
+
+# Regularise redundant gimbal DOFs left in the null space of roll-link IK
+# targets.  Keys are URDF *link* names; values in [0, 1] scale the smoother
+# residual for joints driving that link.  Typical pattern for pitch–roll–yaw
+# chains: yaw/pitch links ≈0.1, roll link ≈1.0, outer yaw ≈0.3.
+# Omit entirely only on robots with no 3-DOF hips/shoulders.
+smooth_joint_filter_masks:
+  <left_hip_yaw_link>: 0.1
+  <right_hip_yaw_link>: 0.1
+  <left_shoulder_pitch_link>: 0.1
+  <left_shoulder_roll_link>: 1.0
+  <left_shoulder_yaw_link>: 0.3
+  <right_shoulder_pitch_link>: 0.1
+  <right_shoulder_roll_link>: 1.0
+  <right_shoulder_yaw_link>: 0.3
+
+rest_offsets: {}
+
+feet:
+  left_contact_link: <left_ankle_roll_link>
+  right_contact_link: <right_ankle_roll_link>
+  ground_z: 0.0
+  foot_height: 0.02
+
+# Optional retarget pipeline tuning (consumed by Web UI / NewtonBasicPipeline).
+# After calibration, you can add per-reference bundled scalers:
+#
+#   references:
+#     soma_bvh:
+#       scaler_config: soma_scaler_config.yaml
+#
+# See configs/robots/unitree_g1/robot.g1_29dof.yaml for a complete example.
+retarget:
+  num_initialization_frames: 10   # warm-up IK on frame 0 (soma uses 10)
+  num_stabilization_frames: 5     # settle final pose (soma uses 5)
+  apply_feet_stabilizer: true
+  feet_stabilizer:
+    ground_contact_z: 0.0
+    min_foot_clearance: 0.01
+  # references:
+  #   soma_bvh:
+  #     scaler_config: soma_scaler_config.yaml

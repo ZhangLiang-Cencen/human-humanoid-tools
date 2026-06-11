@@ -1,0 +1,59 @@
+# hhtools dataset-analysis configuration.
+#
+# Drives the "数据集可视化分析 / Dataset Visualization & Analysis" panel.  All
+# values are non-destructive: they only affect how clips are *scored* and
+# *tagged*, never whether they are kept.  Copy + edit and pass to the analyze
+# API to override per session.
+
+# ---------------------------------------------------------------- complexity
+# LIMMT motion complexity  C(x) = mean_t( ||q̇||^2 + lambda * ||q̈||^2 )
+complexity:
+  lambda_accel: 0.1
+
+# ---------------------------------------------------------------- thresholds
+thresholds:
+  floating_height_m: 0.15        # min foot height above ground to count as airborne
+  contact_height_m: 0.05         # foot below this (above ground) counts as in contact
+  foot_slide_speed_mps: 0.1      # horizontal foot speed while in contact -> sliding
+  static_root_speed_mps: 0.15    # below -> "in place"
+  inverted_angle_deg: 90.0       # pelvis up-vector vs world +Z beyond this -> inverted
+  jump_airborne_ratio: 0.12      # airborne fraction above this -> jump/flight
+  leg_static_quantile: 0.15      # leg energy below this dataset-quantile -> leg_static
+  dynamics_quantiles: [0.25, 0.75, 0.95]   # static|low / mid / high / burst splits
+
+# ---------------------------------------------------------------- quality S_phy
+# S_phy = 100 - sum_i ( weight_i * severity_i ),  severity_i in [0, 1].
+# Ordering follows LIMMT: floating is the most destructive artifact, slide/jerk
+# are mild.  Weights are normalised "points deducted" and sum to ~100.
+quality:
+  weights:
+    floating: 45.0
+    penetration: 15.0
+    vel_violation: 22.0
+    foot_slide: 8.0
+    self_collision: 5.0
+    jerk: 5.0
+  warn_below: 90.0        # S_phy < this -> quality_warn
+  bad_below: 70.0         # S_phy < this -> quality_bad
+  # LIMMT Table 3 raw calibrated weights, kept for reference / future sim-based
+  # scoring.  These are in the paper's metric units and are NOT used directly by
+  # the normalised-severity scorer above.
+  limmt_raw_weights:
+    floating: 24.19
+    foot_slide: 1.70
+    penetration: 216.62
+    jerk: 0.28
+    vel_violation: 44.22
+    self_collision: 0.17
+
+# ---------------------------------------------------------------- embedding
+embedding:
+  backend: handcrafted          # "handcrafted" (A, no training) | "pae" (B, on-the-fly)
+  pae:
+    window_s: 4.0
+    k: 8
+
+# ---------------------------------------------------------------- subset (FPS)
+subset:
+  alpha: 0.99                    # LIMMT Global Weighted FPS: distance vs complexity
+  default_ratio: 0.1             # default fraction selected (10%)

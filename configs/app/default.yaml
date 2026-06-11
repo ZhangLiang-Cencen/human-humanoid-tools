@@ -1,0 +1,22 @@
+# hhtools default application configuration.
+# Copy this file to configs/app/local.yaml and override fields as needed.
+
+viewer:
+  host: 127.0.0.1
+  port: 8008
+  theme: light
+  auto_fit_camera: true
+
+motion:
+  internal_up_axis: Z
+  internal_forward_axis: X
+  default_unit: cm       # assumed when a BVH file does not declare units
+  default_framerate: 30
+
+retarget:
+  # backend selects the pipeline used by `hhtools retarget run`:
+  #   newton_basic     — Newton + NVIDIA Warp IK (skeleton-only mocap, mimic clips)
+  #   interaction_mesh — Laplacian + MuJoCo SQP/MPC (clips with objects / terrain)
+  backend: newton_basic
+  output_sample_rate: 30
+  output_format: csv

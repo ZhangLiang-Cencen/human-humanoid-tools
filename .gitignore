@@ -1,0 +1,153 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+.installed.cfg
+
+# Virtual envs
+.venv/
+.hhtools/
+venv/
+env/
+.env
+
+# Testing / coverage
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage.xml
+*.cover
+
+# Tooling
+.uv/
+.python-version
+# uv.lock is tracked — see README (reproducible installs for clone-and-run users).
+
+# NVIDIA Warp / Newton kernel cache (auto-generated, machine-specific)
+.warp_cache/
+warp_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cursor
+.cursor/
+
+# hhtools runtime
+~/.cache/hhtools/
+.cache/
+logs/
+outputs/
+checkpoints/
+
+# User-supplied body models (never commit MPI-licensed weights)
+/body_models/
+configs/body_models/*
+!configs/body_models/README.md
+**/SMPLX_*.npz
+**/SMPLH_*.npz
+**/SMPLH_*.pkl
+**/SMPL_*.pkl
+**/SMPLX_*.pkl
+
+# Motion datasets: ignore bulk downloads; curated demo clips are tracked.
+# (holosoma, parc_ms, FBX, GLB are not listed here — they commit as-is.)
+# Bulk folders — negated below for assets/motions/mimic/ examples.
+assets/motions/**/GVHMR/
+!assets/motions/mimic/GVHMR/
+!assets/motions/mimic/GVHMR/**
+assets/motions/**/Humanoid-X/
+!assets/motions/mimic/Humanoid-X/
+!assets/motions/mimic/Humanoid-X/**
+assets/motions/**/KungFu/
+!assets/motions/mimic/KungFu/
+!assets/motions/mimic/KungFu/**
+assets/motions/**/KungFuAthlete/
+!assets/motions/mimic/KungFuAthlete/
+!assets/motions/mimic/KungFuAthlete/**
+assets/motions/**/LAFAN/
+!assets/motions/mimic/LAFAN/
+!assets/motions/mimic/LAFAN/**
+assets/motions/**/Motion-X/
+!assets/motions/mimic/Motion-X/
+!assets/motions/mimic/Motion-X/**
+assets/motions/**/PHUMA/
+!assets/motions/mimic/PHUMA/
+!assets/motions/mimic/PHUMA/**
+assets/motions/**/SOMA/
+!assets/motions/mimic/SOMA/
+!assets/motions/mimic/SOMA/**
+assets/motions/**/GRAB/
+!assets/motions/mimic/GRAB/
+!assets/motions/mimic/GRAB/**
+assets/motions/**/examples/
+!assets/motions/mimic/examples/
+!assets/motions/mimic/examples/**
+# AMASS: track all curated demos under mimic/; bulk AMASS elsewhere stays ignored
+assets/motions/mimic/AMASS/*
+!assets/motions/mimic/AMASS/
+!assets/motions/mimic/AMASS/**
+assets/motions/intermimic/OMOMO/*
+!assets/motions/intermimic/OMOMO/sub10_largebox_000/
+!assets/motions/intermimic/OMOMO/sub10_largebox_000/**
+!assets/motions/intermimic/OMOMO/sub12_woodchair_000/
+!assets/motions/intermimic/OMOMO/sub12_woodchair_000/**
+# Legacy flat-layout entries (kept for older checkouts)
+assets/motions/AMASS/
+assets/motions/GVHMR/
+assets/motions/KungFu/
+assets/motions/LAFAN/
+assets/motions/Motion-X/
+assets/motions/OMOMO/
+assets/motions/PHUMA/
+assets/motions/SOMA/
+assets/processed_npz/
+assets/save_npz/
+assets/retargeted/
+
+# Robot presets: only ship the contributor template + Unitree G1 (URDF,
+# meshes, robot.yaml, calibration).  Other presets and Web uploads live under
+# ~/.config/hhtools/robots/ and stay untracked here.
+configs/robots/*
+!configs/robots/_template/
+!configs/robots/_template/**
+!configs/robots/unitree_g1/
+!configs/robots/unitree_g1/**
+
+# Large assets (use git-lfs if you need them tracked)
+*.mp4
+*.mov
+*.avi
+
+# Temp
+tmp/
+scratch/
+*.log

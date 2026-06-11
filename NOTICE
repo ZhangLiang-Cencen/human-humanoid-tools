@@ -1,0 +1,53 @@
+human-humanoid-tools (hhtools)
+Copyright 2026 hhtools contributors
+
+This product includes software developed at:
+
+  - NVIDIA Corporation: SOMA Retargeter (Apache-2.0). The Newton+Warp retargeting
+    pipeline, human-to-robot scaler, feet stabilizer, and joint-limit clamper
+    modules in this project are adapted from the original soma-retargeter sources.
+    https://github.com/NVlabs/SOMA-Retargeter
+
+  - NVIDIA Corporation: holosoma (Apache-2.0). Laplacian interaction-mesh helpers
+    and MPC/SQP retargeting logic in ``hhtools.retarget.interaction_mesh`` were
+    adapted from holosoma interaction-mesh retargeting utilities.
+    https://github.com/NVIDIA-Omniverse/holosoma
+
+  - Meta Platforms, Inc. and affiliates: AI4AnimationPy (Apache-2.0). The public
+    API shape for Motion import and the NPZ schema were inspired by the
+    ai4animationpy project, but all source code in this repository is newly
+    authored for Apache-2.0 compatibility.
+    https://github.com/facebookresearch/ai4animationpy
+
+Third-party components (installed as dependencies, not vendored):
+
+  - smplx (Apache-2.0)     - https://github.com/vchoutas/smplx
+  - trimesh (MIT)          - https://github.com/mikedh/trimesh
+  - Viser (Apache-2.0)     - https://github.com/nerfstudio-project/viser
+  - Newton (Apache-2.0)    - https://github.com/newton-physics/newton
+  - NVIDIA Warp (Apache-2.0) - https://github.com/NVIDIA/warp
+  - yourdfpy (Apache-2.0)  - https://github.com/clemense/yourdfpy
+  - MuJoCo (Apache-2.0)    - https://github.com/google-deepmind/mujoco
+  - OSQP (Apache-2.0)      - https://github.com/osqp/osqp
+
+SMPL, SMPL+H, SMPL-X body model weights are NOT bundled with this project and are
+released by the Max Planck Institute under non-commercial research licenses that
+users must accept separately:
+
+  - SMPL     : https://smpl.is.tue.mpg.de
+  - SMPL+H   : https://mano.is.tue.mpg.de
+  - SMPL-X   : https://smpl-x.is.tue.mpg.de
+
+Public motion datasets supported by format adapters (NOT redistributed by this
+project; each has its own upstream license — users must obtain data separately
+and comply with the respective terms):
+
+  - AMASS        : https://amass.is.tue.mpg.de
+  - Motion-X     : https://github.com/IDEA-Research/Motion-X
+  - OMOMO        : https://github.com/lijiaman/omomo_release
+  - PHUMA        : https://github.com/DAVIAN-Robotics/PHUMA
+  - GVHMR        : https://github.com/zju3dv/GVHMR
+  - holosoma / meshmimic : https://github.com/NVIDIA-Omniverse/holosoma
+  - LAFAN1       : https://github.com/ubisoft/ubisoft-laforge-animation-dataset
+
+Refer to each upstream project for its individual license terms.
