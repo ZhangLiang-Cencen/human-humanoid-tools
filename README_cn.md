@@ -19,7 +19,7 @@
 
 - **快速重映射**：拖入人体动作 → 选机器人 → 导出 CSV/ZIP；**Newton IK** + **MPC-SQP** 交互网格。
 - **多源人体数据**：BVH / FBX / GLB / SMPL 系；适配 AMASS、GVHMR、LAFAN、OMOMO、PHUMA、intermimic、meshmimic 等。
-- **任意 URDF**：内置 **Unitree G1**；Web 上传其他机器人（[`robot.yaml` 模板](configs/robots/_template/robot.yaml)）。
+- **任意 URDF**：Web 上传任意其他机器人。拖入 URDF，拖入 mesh，自动识别，无需调参。
 - **机器人→机器人（R2R）**：已有机器人 CSV/PKL 轨迹重映射到新 URDF。
 - **数据集分析**：Web 端扫描、打标、聚类、子集推荐。
 

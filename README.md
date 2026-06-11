@@ -19,7 +19,7 @@
 
 - **Fast retarget** — drag a human clip, pick a robot, export CSV/ZIP; **Newton IK** + **MPC-SQP** interaction mesh.
 - **Human formats** — BVH / FBX / GLB / SMPL family; adapters for AMASS, GVHMR, LAFAN, OMOMO, PHUMA, intermimic, meshmimic, …
-- **Any URDF** — bundled **Unitree G1**; upload others in the Web UI ([`robot.yaml` template](configs/robots/_template/robot.yaml)).
+- **Any URDF** — upload any robot in the Web UI: drag in the URDF, drag in meshes; auto-detected, no manual tuning.
 - **Robot→robot (R2R)** — retarget existing robot CSV/PKL exports onto a new URDF.
 - **Dataset analysis** — scan, tag, embed, cluster, and subset human or robot motion libraries in the Web UI.
 

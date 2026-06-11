@@ -44,8 +44,9 @@ const STEPS = [
     anchor: "#tour-robot-import",
     title: "③ 机器人来源",
     body:
-      "切换到 <b>机器人 · Retarget</b>：先上传 <code>.urdf</code>，再上传 <code>meshes/</code> 网格文件夹。" +
-      "也可在「已注册机器人」下拉框选择内置或此前注册的机器人，点 <b>加载选中机器人</b>。" +
+      "切换到 <b>机器人 · Retarget</b>：拖入 <code>.urdf</code>，再拖入 <code>meshes/</code> 网格文件夹。" +
+      "系统自动识别并生成配置，无需手调 <code>robot.yaml</code>。" +
+      "也可在「已注册机器人」下拉框选择此前注册的机器人，点 <b>加载选中机器人</b>。" +
       "加载后中间舞台会显示机器人模型。",
     placement: "left",
   },
