@@ -50,12 +50,18 @@ def _sniff_robot_csv(path: Path) -> bool:
                     if "frame:" in low and "retarget_robot" in low:
                         return False
                     continue
-                cols = [c.strip().lower() for c in s.split(",")]
+                cols_raw = [c.strip() for c in s.split(",")]
+                cols = [c.lower() for c in cols_raw]
                 if "pos_x" in cols and "root_x" not in cols:
                     return False
                 if "root_x" in cols or any(c.startswith("dof_") for c in cols):
                     return True
-                return False
+                # Headerless numeric export (e.g. LAFAN1 batch RP1 CSV): time + root(7) + dofs.
+                try:
+                    nums = [float(c) for c in cols_raw]
+                except ValueError:
+                    return False
+                return len(nums) >= 8
     except (OSError, UnicodeDecodeError):
         return False
     return False
