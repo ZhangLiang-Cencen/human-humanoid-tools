@@ -147,9 +147,13 @@ def retarget(
     from hhtools.core.motion import Motion
     from hhtools.io.robot_csv import save_robot_csv
     from hhtools.retarget.calibration import (
-        build_scaler_config_from_calibration,
         load_calibration,
         resolve_calibration_file,
+    )
+    from hhtools.robot.retarget_profile import (
+        build_feet_stabilizer_config,
+        build_pipeline_config_for_preset,
+        build_scaler_config_for_robot,
     )
     from hhtools.retarget.newton_basic import (
         NewtonBasicPipeline,
@@ -157,10 +161,6 @@ def retarget(
     )
     from hhtools.robot.loader import load_robot
     from hhtools.robot.registry import get as get_preset
-    from hhtools.robot.retarget_profile import (
-        build_feet_stabilizer_config,
-        build_pipeline_config_for_preset,
-    )
 
     files = _expand_inputs(inputs)
     if not files:
@@ -256,7 +256,7 @@ def retarget(
         # from the URDF's FK at the calibrated joint configuration;
         # see :mod:`hhtools.retarget.calibration`.
         try:
-            scaler_cfg = build_scaler_config_from_calibration(
+            scaler_cfg = build_scaler_config_for_robot(
                 calibration, robot_model, motion, human_height=human_height,
             )
         except Exception as err:  # noqa: BLE001

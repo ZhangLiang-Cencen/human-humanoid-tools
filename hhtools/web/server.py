@@ -887,6 +887,13 @@ def create_app(
                 search_dirs=[drop / "meshes", drop],
                 output_path=urdf_path,
             )
+            # Restore calibration / bundled scalers before scaffold so
+            # ``joint_scale_multipliers`` defaults match saved calibration.
+            for fname, data in preserved_files.items():
+                try:
+                    (drop / fname).write_bytes(data)
+                except OSError:
+                    pass
             scaffold_yaml_file(urdf_path, overwrite=True, root_dir=drop)
             try:
                 preset = preset_from_dir(drop)
@@ -901,16 +908,9 @@ def create_app(
             if yaml_path and repaired != dict(preset.ik_map):
                 update_robot_yaml_ik_map(yaml_path, repaired)
                 refresh()
-            # Restore preserved user files + re-attach references, then re-scan
-            # so the loaded preset reflects the bundled scaler again.
-            for fname, data in preserved_files.items():
-                try:
-                    (drop / fname).write_bytes(data)
-                except OSError:
-                    pass
             if preserved_references:
                 _merge_retarget_references(yaml_path, preserved_references)
-            if preserved_files or preserved_references:
+            if preserved_references:
                 refresh()
             return _serialize_and_store_robot(preset.name)
         except HTTPException:
@@ -1055,6 +1055,20 @@ def create_app(
             )
             path = calibration_path_for(preset.urdf_path.parent, reference=reference)
             save_calibration(cal, path, derived=derived)
+            yaml_path = preset.meta.get("yaml_path")
+            if yaml_path and derived is not None:
+                from hhtools.robot.joint_scales import (
+                    sync_joint_scale_multipliers_to_robot_yaml,
+                )
+
+                sync_joint_scale_multipliers_to_robot_yaml(
+                    yaml_path,
+                    derived.scales,
+                    dict(preset.ik_map),
+                )
+                from hhtools.robot.registry import refresh
+
+                refresh()
         except Exception as err:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"calibration save failed: {err}") from err
         return {"ok": True, "path": str(path)}

@@ -698,6 +698,21 @@ def scaffold_preset(
     payload["rest_offsets"] = {}
 
     retarget_cfg: dict[str, object] = dict(_DEFAULT_RETARGET)
+    from hhtools.robot.joint_scales import (
+        infer_joint_scales_for_scaffold,
+        robot_dir_has_calibration,
+    )
+
+    if robot_dir_has_calibration(root_dir):
+        joint_scales = infer_joint_scales_for_scaffold(
+            root_dir,
+            urdf_path,
+            ordered_ik_map,
+            preset_name=preset_name,
+            mesh_search_paths=mesh_paths,
+        )
+        if joint_scales:
+            retarget_cfg["joint_scale_multipliers"] = joint_scales
     payload["retarget"] = retarget_cfg
 
     header = _yaml_header(preset_name, urdf_rel)
@@ -769,6 +784,10 @@ def _yaml_header(name: str, urdf_rel: str) -> str:
         f"# Source URDF: {urdf_rel}\n"
         f"# You may edit this file freely; hhtools will NOT overwrite it.\n"
         f"# Run `hhtools robot scaffold {name} --force` to regenerate from the URDF.\n"
+        f"#\n"
+        f"# retarget.joint_scale_multipliers: per-canonical scale defaults.\n"
+        f"# Uses saved calibration scales when present, else URDF zero pose.\n"
+        f"# Edit individual entries to tune without re-calibrating.\n"
         f"#\n"
         f"# ik_map merges keyword matching with URDF topology inference\n"
         f"# (distal wrist/ankle/end-effector links).  Double-check mappings\n"

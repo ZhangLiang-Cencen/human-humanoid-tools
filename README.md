@@ -48,6 +48,30 @@ Open `http://127.0.0.1:8009`.
 
 Robot tuning: edit [`configs/robots/unitree_g1/`](configs/robots/unitree_g1/) or uploaded `~/.config/hhtools/robots/<name>/robot.yaml`; run `hhtools robot validate <name>`. Details in [framework.md](framework.md).
 
+### Tuning `robot.yaml`
+
+Paths: bundled presets under `configs/robots/<name>/`; Web uploads under `~/.config/hhtools/robots/<name>/`. **Yaml edits apply on the next retarget** (no Web restart). Restart `hhtools web` only after upgrading the Python package.
+
+| Section | Purpose |
+|---------|---------|
+| `ik_map` | Canonical human joint → URDF link. On 3-DOF hips/shoulders, map to the **middle** link (usually `*_roll_link`). |
+| `weights` | IK priorities: `t_weight` (position), `r_weight` (orientation). |
+| `smooth_joint_filter_masks` | Damp redundant pitch/yaw DOFs left in the null space of gimbal targets. |
+| `retarget.joint_scale_multipliers` | Per-canonical **absolute** scale (same units as calibration `derived.scales`). Written after calibration; edit individual keys to fine-tune body proportions without re-calibrating. Example: `left_shoulder: 0.5` narrows the upper body. **Shoulders** affect lateral IK + shoulder roll only (not vertical height). Values equal to calibration are ignored. |
+| `retarget.feet_stabilizer`, `apply_feet_stabilizer` | Foot planting and body-ground clearance; set `apply_feet_stabilizer: false` for rolls / flips. |
+| `retarget.references.<format>` | Per motion-format overrides (e.g. bundled `scaler_config`). |
+
+```yaml
+retarget:
+  joint_scale_multipliers:
+    left_shoulder: 0.5
+    right_shoulder: 0.5
+    left_elbow: 1.0
+    # … other ik_map keys; omit or leave at calibration values for no change
+```
+
+Template and field notes: [`configs/robots/_template/robot.yaml`](configs/robots/_template/robot.yaml). Re-uploading a URDF regenerates `robot.yaml` from the URDF (calibration files are kept; hand-edited `ik_map` / weights may be overwritten).
+
 ---
 
 ## Demo clips (`assets/motions`)

@@ -712,6 +712,7 @@ def build_scaler_config_from_calibration(
     *,
     human_height: float,
     preserve_root_yaw: bool = True,
+    joint_scale_overrides: dict[str, float] | None = None,
 ) -> "ScalerConfig":
     """Build a :class:`ScalerConfig` that retargets ``clip`` onto ``model``.
 
@@ -841,7 +842,11 @@ def build_scaler_config_from_calibration(
         )
 
     return build_scaler_config_soma_style(
-        calibration, model, rest_pose, reference_motion=clip,
+        calibration,
+        model,
+        rest_pose,
+        reference_motion=clip,
+        joint_scale_overrides=joint_scale_overrides,
     )
 
 
@@ -985,6 +990,7 @@ def build_scaler_config_soma_style(
     reference_motion: "Motion | None" = None,
     src_to_canonical: dict[str, str] | None = None,
     reference_pose: "HumanReferencePose | None" = None,
+    joint_scale_overrides: dict[str, float] | None = None,
 ) -> "ScalerConfig":
     """Closed-form :class:`ScalerConfig` that lines the source rest up with
     the robot's calibrated rest exactly at frame 0.
@@ -1302,16 +1308,25 @@ def build_scaler_config_soma_style(
 
         # ---------- scale[j] ----------
         if canonical == src_root_canonical or src_name == src_root_name:
-            scale = scale_root
+            scale_base = scale_root
         else:
             src_disp = p_src_j - p_src_root
             rbt_disp = p_rbt_j - p_rbt_root
             s_norm = float(np.linalg.norm(src_disp))
             r_norm = float(np.linalg.norm(rbt_disp))
             if s_norm < 1e-4 or r_norm < 1e-6:
-                scale = 1.0
+                scale_base = 1.0
             else:
-                scale = r_norm / s_norm
+                scale_base = r_norm / s_norm
+
+        scale = scale_base
+        overrides = joint_scale_overrides or {}
+        if overrides:
+            override = overrides.get(canonical)
+            if override is None:
+                override = overrides.get(src_name)
+            if override is not None:
+                scale = float(override)
 
         # ---------- q_rest_target[j] (what q_out lands on at rest) -------
         # Standard closed-form alignment lands the runtime IK rotation
@@ -1395,7 +1410,11 @@ def build_scaler_config_soma_style(
         # and t_offset construction.  So the splay yaw on ankles affects
         # only the IK rotation target, not its position target.
         rbt_disp = p_rbt_j - p_rbt_root
-        residual = rbt_disp - np.float32(scale) * (p_src_j - p_src_root)
+        # Offsets are solved against the calibration scale (``scale_base``),
+        # while ``joint_scales`` may carry an absolute override from
+        # ``robot.yaml`` ``retarget.joint_scale_multipliers``.  That
+        # deliberately shifts rest/motion IK targets without re-calibrating.
+        residual = rbt_disp - np.float32(scale_base) * (p_src_j - p_src_root)
         t_offset = Q.rotate(
             Q.conjugate(q_rest_target[None, :]),
             residual.astype(np.float32)[None, :],

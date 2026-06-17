@@ -48,6 +48,30 @@ uv run hhtools web
 
 参数调优：改 [`configs/robots/unitree_g1/`](configs/robots/unitree_g1/) 或 `~/.config/hhtools/robots/<名称>/robot.yaml`，运行 `hhtools robot validate <名称>`。原理见 [framework.md](framework.md)。
 
+### 调整 `robot.yaml`
+
+路径：仓库内置机器人在 `configs/robots/<名称>/`；Web 上传的机器人在 `~/.config/hhtools/robots/<名称>/`。**改 yaml 后下次 Retarget 即生效，无需重启 Web**；仅升级 Python 包后需重启 `hhtools web`。
+
+| 字段 | 作用 |
+|------|------|
+| `ik_map` | 标准人体关节 → URDF link。三自由度髋/肩应映射到**中间** link（多为 `*_roll_link`）。 |
+| `weights` | IK 权重：`t_weight` 位置、`r_weight` 朝向。 |
+| `smooth_joint_filter_masks` | 压低 gimbal 链上 pitch/yaw 等冗余自由度。 |
+| `retarget.joint_scale_multipliers` | 各 canonical 关节的**绝对**缩放（与标定 `derived.scales` 同单位）。标定后会写入；可逐项微调体型，无需重新标定。例如 `left_shoulder: 0.5` 收窄上半身。**肩**只影响横向 IK 与 shoulder roll，不改变竖直身高；与标定值相同则视为未修改。 |
+| `retarget.feet_stabilizer`、`apply_feet_stabilizer` | 脚底贴地、身体离地高度等；翻滚类动作可设 `apply_feet_stabilizer: false`。 |
+| `retarget.references.<格式>` | 按动作格式覆盖（如 bundled `scaler_config`）。 |
+
+```yaml
+retarget:
+  joint_scale_multipliers:
+    left_shoulder: 0.5
+    right_shoulder: 0.5
+    left_elbow: 1.0
+    # … 其余 ik_map 关节；与标定一致可省略
+```
+
+完整模板见 [`configs/robots/_template/robot.yaml`](configs/robots/_template/robot.yaml)。**重新上传 URDF** 会按 URDF 重新生成 `robot.yaml`（标定文件保留；手改的 `ik_map` / weights 可能被覆盖）。
+
 **常见问题：** `git pull` 后请 `uv sync` 并重启 `uv run hhtools web`（勿用系统旧包）；硬刷新浏览器。Newton 批量失败会自动逐条回退；翻滚类动作请关闭「脚底贴地修正」。
 
 ---

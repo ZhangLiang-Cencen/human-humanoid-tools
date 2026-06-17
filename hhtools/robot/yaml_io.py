@@ -32,6 +32,7 @@ from typing import Mapping
 
 __all__ = [
     "update_robot_yaml_ik_map",
+    "update_robot_yaml_joint_scale_multipliers",
     "update_robot_yaml_smooth_joint_filter_masks",
     "load_robot_yaml",
 ]
@@ -137,6 +138,59 @@ def update_robot_yaml_ik_map(
         for k, v in ik_map.items():
             if k not in seen:
                 existing[k] = v
+
+    with path.open("w", encoding="utf-8") as fp:
+        yaml_io.dump(data, fp)
+
+
+def update_robot_yaml_joint_scale_multipliers(
+    path: str | Path,
+    scales: Mapping[str, float],
+) -> None:
+    """Rewrite ``retarget.joint_scale_multipliers`` in ``robot.yaml``."""
+
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"robot.yaml not found at {path}")
+
+    for k, v in scales.items():
+        if not isinstance(k, str) or not k.strip():
+            raise ValueError(f"joint_scale_multipliers key {k!r} must be a non-empty string")
+        if not isinstance(v, (int, float)):
+            raise ValueError(f"joint_scale_multipliers[{k!r}]={v!r} must be numeric")
+
+    yaml_io = _yaml_rt()
+    with path.open("r", encoding="utf-8") as fp:
+        data = yaml_io.load(fp)
+
+    if data is None:
+        from ruamel.yaml.comments import CommentedMap  # type: ignore[import]
+
+        data = CommentedMap()
+
+    from ruamel.yaml.comments import CommentedMap  # type: ignore[import]
+
+    retarget = data.get("retarget")
+    if retarget is None:
+        retarget = CommentedMap()
+        data["retarget"] = retarget
+
+    existing = retarget.get("joint_scale_multipliers")
+    if existing is None:
+        retarget["joint_scale_multipliers"] = CommentedMap(
+            {k: round(float(v), 4) for k, v in scales.items()}
+        )
+    else:
+        seen: set[str] = set()
+        for k in list(existing.keys()):
+            if k in scales:
+                existing[k] = round(float(scales[k]), 4)
+                seen.add(k)
+            else:
+                del existing[k]
+        for k, v in scales.items():
+            if k not in seen:
+                existing[k] = round(float(v), 4)
 
     with path.open("w", encoding="utf-8") as fp:
         yaml_io.dump(data, fp)

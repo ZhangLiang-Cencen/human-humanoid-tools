@@ -3236,15 +3236,13 @@ def _build_robot_tab(  # type: ignore[no-untyped-def]
         derivation details.
         """
 
-        from hhtools.retarget.calibration import (
-            build_scaler_config_from_calibration,
-        )
+        from hhtools.robot.retarget_profile import build_scaler_config_for_robot
 
         cal = _resolve_robot_calibration(model)
         if cal is None:
             return None
         try:
-            return build_scaler_config_from_calibration(
+            return build_scaler_config_for_robot(
                 cal, model, clip, human_height=float(human_h),
             )
         except Exception as err:  # noqa: BLE001 — surfaced in UI
@@ -4749,6 +4747,25 @@ def _build_robot_tab(  # type: ignore[no-untyped-def]
                 color="red",
             )
             return
+
+        yaml_path = preset.meta.get("yaml_path")
+        if yaml_path and derived is not None:
+            from hhtools.robot.joint_scales import (
+                sync_joint_scale_multipliers_to_robot_yaml,
+            )
+
+            try:
+                sync_joint_scale_multipliers_to_robot_yaml(
+                    yaml_path,
+                    derived.scales,
+                    dict(preset.ik_map),
+                )
+            except Exception as err:  # noqa: BLE001
+                _notify_all(
+                    server, "Scale yaml sync failed",
+                    f"{type(err).__name__}: {err}",
+                    color="orange",
+                )
 
         # --- Also persist the (possibly edited) ik_map to robot.yaml ---
         # We do this after the calibration yaml write so the user has a

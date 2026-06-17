@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +20,9 @@ if TYPE_CHECKING:
     from hhtools.retarget.calibration.calibration import RobotRetargetCalibration
     from hhtools.robot.base import RobotPreset
     from hhtools.robot.loader import URDFRobotModel
+    from numpy.typing import NDArray
+
+_log = logging.getLogger(__name__)
 
 # Matches :data:`hhtools.retarget.calibration.calibration._CANONICAL_HUMAN_HEIGHT_M`.
 _DEFAULT_HUMAN_HEIGHT_BY_REFERENCE: dict[str, float] = {
@@ -85,9 +90,310 @@ def _reference_defaults(reference: str) -> dict[str, Any]:
     return dict(_REFERENCE_FEET_DEFAULTS.get(reference, {}))
 
 
+# Canonical slots that receive lateral IK narrowing when yaml scales drop.
+_UPPER_BODY_CANONICAL = frozenset({
+    "chest",
+    "spine",
+    "neck",
+    "head",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_collar",
+    "right_collar",
+})
+
+# Shoulder yaml values drive lateral IK + roll narrowing only.  Applying them
+# to the geocentric scaler also shrinks the vertical root→shoulder offset and
+# makes the solved robot squat while the hands look correct.
+_NARROWING_ONLY_CANONICAL = frozenset({"left_shoulder", "right_shoulder"})
+
+_narrowing_ratios_cache: dict[tuple[object, ...], dict[str, float]] = {}
+
+
 def _retarget_block(preset: "RobotPreset") -> dict[str, Any]:
     block = preset.meta.get("retarget")
     return dict(block) if isinstance(block, dict) else {}
+
+
+def _reload_retarget_block(preset: "RobotPreset") -> dict[str, Any]:
+    """Read ``retarget:`` from disk so yaml edits apply without restarting."""
+
+    yaml_path = preset.meta.get("yaml_path")
+    if yaml_path:
+        try:
+            with Path(yaml_path).open("r", encoding="utf-8") as fp:
+                data = yaml.safe_load(fp) or {}
+            block = data.get("retarget")
+            if isinstance(block, dict):
+                return dict(block)
+        except OSError:
+            pass
+    return _retarget_block(preset)
+
+
+def joint_scale_overrides_from_preset(
+    preset: "RobotPreset",
+) -> dict[str, float]:
+    """Read ``retarget.joint_scale_multipliers`` from ``robot.yaml``.
+
+    Values are absolute per-canonical joint scales (same units as calibration
+    ``derived.scales``).  Scaffold writes URDF-derived defaults; edit entries
+    to tune without re-calibrating.
+    """
+
+    block = _reload_retarget_block(preset)
+    raw = block.get("joint_scale_multipliers")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): float(v) for k, v in raw.items()}
+
+
+def _yaml_active_scale_edits(
+    preset: "RobotPreset",
+    robot_model: "URDFRobotModel | None" = None,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Return ``(active yaml edits, calibration / URDF baselines)``."""
+
+    yaml_scales = joint_scale_overrides_from_preset(preset)
+    if not yaml_scales:
+        return {}, {}
+
+    from hhtools.robot.joint_scales import (
+        active_joint_scale_overrides,
+        scale_context_for_preset,
+    )
+
+    baselines, zero_pose = scale_context_for_preset(preset, robot_model)
+    active = active_joint_scale_overrides(
+        yaml_scales, baselines, zero_pose_scales=zero_pose,
+    )
+    return active, baselines
+
+
+def _apply_joint_scale_overrides_to_config(
+    cfg: ScalerConfig,
+    overrides: dict[str, float],
+    *,
+    motion: "Motion | None" = None,
+) -> ScalerConfig:
+    if not overrides:
+        return cfg
+
+    from hhtools.retarget.newton_basic.human_aliases import auto_source_to_canonical
+
+    if motion is not None:
+        joint_names = motion.hierarchy.bone_names
+    else:
+        joint_names = tuple(cfg.joint_scales.keys())
+    src2can = auto_source_to_canonical(joint_names)
+    new_scales = dict(cfg.joint_scales)
+    for src in new_scales:
+        canonical = src2can.get(src, src)
+        override = overrides.get(canonical)
+        if override is None:
+            override = overrides.get(src)
+        if override is not None:
+            new_scales[src] = float(override)
+    return replace(cfg, joint_scales=new_scales)
+
+
+def joint_scale_narrowing_ratios(
+    preset: "RobotPreset",
+    *,
+    robot_model: "URDFRobotModel | None" = None,
+) -> dict[str, float]:
+    """Lateral IK / roll narrowing factors: yaml scale ÷ baseline scale."""
+
+    from hhtools.robot.joint_scales import scale_cache_key
+
+    key = scale_cache_key(preset)
+    cached = _narrowing_ratios_cache.get(key)
+    if cached is not None:
+        return dict(cached)
+
+    active, baselines = _yaml_active_scale_edits(preset, robot_model)
+    ratios: dict[str, float] = {}
+    for canonical, yaml_val in active.items():
+        if canonical not in _UPPER_BODY_CANONICAL:
+            continue
+        base = baselines.get(canonical)
+        if base is not None and float(base) > 1e-6:
+            ratio = float(yaml_val) / float(base)
+            if abs(ratio - 1.0) > 1e-6:
+                ratios[canonical] = ratio
+    _narrowing_ratios_cache[key] = ratios
+    return dict(ratios)
+
+
+def _active_joint_scale_overrides_for_model(
+    preset: "RobotPreset",
+    robot_model: "URDFRobotModel | None" = None,
+) -> dict[str, float]:
+    """Yaml scale tweaks that differ from calibration / URDF baseline."""
+
+    active, _ = _yaml_active_scale_edits(preset, robot_model)
+    return {
+        k: v
+        for k, v in active.items()
+        if k not in _NARROWING_ONLY_CANONICAL
+    }
+
+
+def apply_upper_body_lateral_ik_narrowing(
+    ik_targets: "NDArray",
+    entries,
+    preset: "RobotPreset",
+    *,
+    robot_model: "URDFRobotModel | None" = None,
+) -> "NDArray":
+    """Pull upper-body IK positions toward the body midplane in the lateral axis.
+
+    Compares ``retarget.joint_scale_multipliers`` against calibration / URDF
+    baselines so the solved robot mesh narrows when yaml scales are reduced.
+    """
+
+    import numpy as np
+
+    affected = {
+        c: float(r)
+        for c, r in joint_scale_narrowing_ratios(
+            preset, robot_model=robot_model,
+        ).items()
+        if float(r) < 1.0 - 1e-6
+    }
+    if not affected:
+        return ik_targets
+
+    name_to_i = {e.canonical_name: i for i, e in enumerate(entries)}
+    out = np.asarray(ik_targets, dtype=np.float32).copy()
+    n_frames = int(out.shape[0])
+
+    for f in range(n_frames):
+        ls_i = name_to_i.get("left_shoulder")
+        rs_i = name_to_i.get("right_shoulder")
+        lh_i = name_to_i.get("left_hip")
+        rh_i = name_to_i.get("right_hip")
+        chest_i = name_to_i.get("chest")
+        hips_i = name_to_i.get("hips")
+
+        lat_u: np.ndarray | None = None
+        if ls_i is not None and rs_i is not None:
+            lat = out[f, ls_i, :3] - out[f, rs_i, :3]
+            lat[2] = 0.0
+            lat_norm = float(np.linalg.norm(lat))
+            if lat_norm >= 1e-6:
+                lat_u = (lat / lat_norm).astype(np.float32, copy=False)
+        elif lh_i is not None and rh_i is not None:
+            lat = out[f, lh_i, :3] - out[f, rh_i, :3]
+            lat[2] = 0.0
+            lat_norm = float(np.linalg.norm(lat))
+            if lat_norm >= 1e-6:
+                lat_u = (lat / lat_norm).astype(np.float32, copy=False)
+        if lat_u is None:
+            lat_u = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+        if chest_i is not None:
+            anchor = out[f, chest_i, :3]
+        elif hips_i is not None:
+            anchor = out[f, hips_i, :3]
+        elif ls_i is not None and rs_i is not None:
+            anchor = 0.5 * (out[f, ls_i, :3] + out[f, rs_i, :3])
+        else:
+            continue
+
+        for canon, mult in affected.items():
+            idx = name_to_i.get(canon)
+            if idx is None:
+                continue
+            p = out[f, idx, :3]
+            d = p - anchor
+            d_lat = float(np.dot(d, lat_u)) * lat_u
+            d_rest = d - d_lat
+            out[f, idx, :3] = anchor + d_rest + d_lat * np.float32(mult)
+
+    return out
+
+
+def effective_ik_t_weight(
+    canonical_name: str,
+    base_weight: float,
+    preset: "RobotPreset",
+    *,
+    robot_model: "URDFRobotModel | None" = None,
+) -> float:
+    """Raise shoulder/arm tracking when yaml requests lateral narrowing."""
+
+    ratio = joint_scale_narrowing_ratios(
+        preset, robot_model=robot_model,
+    ).get(canonical_name)
+    if ratio is None or float(ratio) >= 1.0:
+        return float(base_weight)
+    # Shoulder pitch links need a strong pull — Ultron's redundant roll/yaw
+    # chain otherwise keeps the solved mesh width unchanged.
+    if canonical_name in ("left_shoulder", "right_shoulder"):
+        return max(float(base_weight), 8.0) / max(float(ratio), 0.25)
+    boost = min(4.0, 1.0 / max(float(ratio), 0.25))
+    return float(base_weight) * boost
+
+
+def _infer_shoulder_roll_joints(preset: "RobotPreset") -> dict[str, str]:
+    """Map canonical shoulders → outer roll DOF names (best-effort)."""
+
+    block = _reload_retarget_block(preset)
+    explicit = block.get("shoulder_roll_joints")
+    if isinstance(explicit, dict):
+        return {str(k): str(v) for k, v in explicit.items()}
+
+    rolls: dict[str, str] = {}
+    for canon, prefix in (
+        ("left_shoulder", "l_arm"),
+        ("right_shoulder", "r_arm"),
+    ):
+        for dof in preset.dof_order:
+            name = str(dof)
+            if prefix in name and "shoulder_r" in name:
+                rolls[canon] = name
+                break
+    return rolls
+
+
+def apply_upper_body_roll_narrowing_post_ik(
+    joint_q: "NDArray",
+    dof_names: list[str] | tuple[str, ...],
+    preset: "RobotPreset",
+    *,
+    root_coord_count: int,
+    robot_model: "URDFRobotModel | None" = None,
+) -> "NDArray":
+    """Scale shoulder-roll abduction after IK (Ultron-like gimbal robots).
+
+    Position-only IK narrowing often cannot move pitch links enough; roll
+    DOFs dominate perceived shoulder width on 3-DOF shoulders.
+    """
+
+    import numpy as np
+
+    ratios = joint_scale_narrowing_ratios(
+        preset, robot_model=robot_model,
+    )
+    rolls = _infer_shoulder_roll_joints(preset)
+    if not rolls or not ratios:
+        return joint_q
+
+    out = np.asarray(joint_q, dtype=np.float32).copy()
+    for canon, roll_joint in rolls.items():
+        ratio = ratios.get(canon)
+        if ratio is None or float(ratio) >= 1.0:
+            continue
+        if roll_joint not in dof_names:
+            continue
+        col = int(root_coord_count) + int(dof_names.index(roll_joint))
+        out[:, col] = out[:, col] * np.float32(ratio)
+    return out
 
 
 def _reference_block(preset: "RobotPreset", reference: str) -> dict[str, Any]:
@@ -210,6 +516,27 @@ def default_human_height(
     return float(fallback)
 
 
+def build_scaler_config_for_robot(
+    calibration: "RobotRetargetCalibration",
+    model: "URDFRobotModel",
+    motion: "Motion",
+    *,
+    human_height: float,
+) -> ScalerConfig:
+    """Build calibration-derived scaler and apply ``robot.yaml`` scale overrides."""
+
+    from hhtools.retarget.calibration import build_scaler_config_from_calibration
+
+    overrides = _active_joint_scale_overrides_for_model(model.preset, robot_model=model)
+    return build_scaler_config_from_calibration(
+        calibration,
+        model,
+        motion,
+        human_height=human_height,
+        joint_scale_overrides=overrides or None,
+    )
+
+
 def resolve_retarget_scaler_config(
     preset: "RobotPreset",
     reference: str,
@@ -222,9 +549,7 @@ def resolve_retarget_scaler_config(
     """Prefer calibration-derived scaler; fall back to optional bundled yaml."""
 
     if calibration is not None and model is not None:
-        from hhtools.retarget.calibration import build_scaler_config_from_calibration
-
-        return build_scaler_config_from_calibration(
+        return build_scaler_config_for_robot(
             calibration, model, motion, human_height=human_height,
         )
 
@@ -236,8 +561,9 @@ def resolve_retarget_scaler_config(
                 adapt_scaler_config_for_hierarchy,
             )
 
-            return adapt_scaler_config_for_hierarchy(cfg, motion.hierarchy)
-        return cfg
+            cfg = adapt_scaler_config_for_hierarchy(cfg, motion.hierarchy)
+        overrides = _active_joint_scale_overrides_for_model(preset, robot_model=model)
+        return _apply_joint_scale_overrides_to_config(cfg, overrides, motion=motion)
 
     raise ValueError(
         f"robot {preset.name!r} has no bundled scaler for reference "

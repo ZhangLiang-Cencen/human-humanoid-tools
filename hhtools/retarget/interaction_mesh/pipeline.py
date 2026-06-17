@@ -34,9 +34,9 @@ from hhtools.core.grounding import (
 )
 from hhtools.core.motion import Motion
 from hhtools.retarget.calibration import (
-    build_scaler_config_from_calibration,
     load_calibration,
 )
+from hhtools.robot.retarget_profile import build_scaler_config_for_robot
 from hhtools.retarget.interaction_mesh.config import InteractionMeshPipelineConfig
 from hhtools.retarget.interaction_mesh.motion_bridge import (
     ScaledMotionScene,
@@ -83,7 +83,7 @@ class InteractionMeshPipeline:
                 robot_name=robot.preset.name,
             )
         cal = load_calibration(calibration_path)
-        scaler_cfg = build_scaler_config_from_calibration(
+        scaler_cfg = build_scaler_config_for_robot(
             cal, robot, motion, human_height=human_height,
         )
         scaler = HumanToRobotScaler(
@@ -1233,6 +1233,16 @@ class InteractionMeshPipeline:
                 "alignment_wrist_m": align_summary["wrist_m"],
                 "alignment_ankle_m": align_summary["ankle_m"],
         }
+
+        from hhtools.robot.retarget_profile import apply_upper_body_roll_narrowing_post_ik
+
+        joint_q = apply_upper_body_roll_narrowing_post_ik(
+            joint_q,
+            dof_names,
+            self.robot.preset,
+            root_coord_count=7,
+            robot_model=self.robot,
+        )
 
         return RetargetedMotion(
             name=motion.name or "interaction_mesh",

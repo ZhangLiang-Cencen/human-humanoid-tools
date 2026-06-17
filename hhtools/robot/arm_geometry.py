@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -12,7 +13,9 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["estimate_shoulder_to_wrist_reach"]
+__all__ = [
+    "estimate_shoulder_to_wrist_reach",
+]
 
 Side = Literal["left", "right"]
 
@@ -129,3 +132,4 @@ def infer_side_from_shoulder_name(name: str) -> Side | None:
     if "right" in low:
         return "right"
     return None
+

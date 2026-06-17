@@ -730,6 +730,13 @@ class NewtonBasicPipeline:
             axis=1,
         ).astype(np.float32, copy=False)
 
+        from hhtools.robot.retarget_profile import apply_upper_body_lateral_ik_narrowing
+
+        ik_targets = apply_upper_body_lateral_ik_narrowing(
+            ik_targets, self.ik_mapping.entries, self.robot.preset,
+            robot_model=self.robot,
+        )
+
         # 3a. Prepend / append warm-up frames so the IK solver can settle
         # before the real motion starts (and after it ends).  See
         # :attr:`PipelineConfig.num_initialization_frames` for the
@@ -866,6 +873,16 @@ class NewtonBasicPipeline:
         joint_q_out = self._rescale_root_displacement(joint_q_out)
         joint_q_out = self._clamp_solved_foot_heights(joint_q_out)
         joint_q_out = self._clamp_solved_foot_lateral(joint_q_out)
+
+        from hhtools.robot.retarget_profile import apply_upper_body_roll_narrowing_post_ik
+
+        joint_q_out = apply_upper_body_roll_narrowing_post_ik(
+            joint_q_out,
+            self.robot.dof_names(),
+            self.robot.preset,
+            root_coord_count=self.ctx.root_coord_count,
+            robot_model=self.robot,
+        )
 
         return RetargetedMotion(
             name=motion.name,
@@ -1072,6 +1089,13 @@ class NewtonBasicPipeline:
             axis=1,
         ).astype(np.float32, copy=False)
 
+        from hhtools.robot.retarget_profile import apply_upper_body_lateral_ik_narrowing
+
+        ik_targets = apply_upper_body_lateral_ik_narrowing(
+            ik_targets, entries, self.robot.preset,
+            robot_model=self.robot,
+        )
+
         # Warm-up / stabilisation padding.
         n_init = max(0, int(self.config.num_initialization_frames))
         n_stab = max(0, int(self.config.num_stabilization_frames))
@@ -1262,6 +1286,16 @@ class NewtonBasicPipeline:
         jq_out = self._rescale_root_displacement(jq_out)
         jq_out = self._clamp_solved_foot_heights(jq_out)
         jq_out = self._clamp_solved_foot_lateral(jq_out)
+
+        from hhtools.robot.retarget_profile import apply_upper_body_roll_narrowing_post_ik
+
+        jq_out = apply_upper_body_roll_narrowing_post_ik(
+            jq_out,
+            self.robot.dof_names(),
+            self.robot.preset,
+            root_coord_count=self.ctx.root_coord_count,
+            robot_model=self.robot,
+        )
 
         return RetargetedMotion(
             name=motion.name,
@@ -1545,6 +1579,9 @@ class NewtonBasicPipeline:
         rot_targets_np[:] = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
         position_objectives: list[ik.IKObjectivePosition] = []
+        from hhtools.robot.retarget_profile import effective_ik_t_weight
+
+        preset = self.robot.preset
         for i, entry in enumerate(entries):
             pos_wp = wp.array(pos_targets_np[i : i + 1], dtype=wp.vec3)
             position_objectives.append(
@@ -1552,7 +1589,10 @@ class NewtonBasicPipeline:
                     link_index=entry.t_body_index,
                     link_offset=wp.vec3(*entry.t_offset),
                     target_positions=pos_wp,
-                    weight=entry.t_weight,
+                    weight=effective_ik_t_weight(
+                        entry.canonical_name, entry.t_weight, preset,
+                        robot_model=self.robot,
+                    ),
                 )
             )
 
@@ -1767,6 +1807,9 @@ class NewtonBasicPipeline:
 
         # --- Objectives (one array per objective, sized for N problems) ------
         position_objectives: list[ik.IKObjectivePosition] = []
+        preset = self.robot.preset
+        from hhtools.robot.retarget_profile import effective_ik_t_weight
+
         for entry in entries:
             pos_wp = wp.zeros(shape=N, dtype=wp.vec3)
             position_objectives.append(
@@ -1774,7 +1817,10 @@ class NewtonBasicPipeline:
                     link_index=entry.t_body_index,
                     link_offset=wp.vec3(*entry.t_offset),
                     target_positions=pos_wp,
-                    weight=entry.t_weight,
+                    weight=effective_ik_t_weight(
+                        entry.canonical_name, entry.t_weight, preset,
+                        robot_model=self.robot,
+                    ),
                 )
             )
 
