@@ -142,26 +142,38 @@ async function checkVideoSlots() {
   const hintText = strings.video?.placeholderHint ?? "";
 
   await Promise.all(
-    [...document.querySelectorAll(".video-slot")].map(async (slot) => {
-      const src = slot.dataset.video;
-      if (!src) return;
+    [...document.querySelectorAll(".video-slot")].map(
+      (slot) =>
+        new Promise((resolve) => {
+          const src = slot.dataset.video;
+          if (!src) {
+            resolve();
+            return;
+          }
 
-      const ph = slot.querySelector(".video-placeholder");
-      if (ph) {
-        ph.querySelector(".ph-title").textContent = placeholderText;
-        ph.querySelector(".ph-hint").textContent = hintText || src;
-      }
+          const ph = slot.querySelector(".video-placeholder");
+          if (ph) {
+            ph.querySelector(".ph-title").textContent = placeholderText;
+            ph.querySelector(".ph-hint").textContent = hintText || src;
+          }
 
-      let exists = false;
-      try {
-        const r = await fetch(src, { method: "HEAD" });
-        exists = r.ok;
-      } catch {
-        exists = false;
-      }
+          const video = slot.querySelector("video");
+          if (!video) {
+            slot.classList.add("is-missing");
+            resolve();
+            return;
+          }
 
-      slot.classList.toggle("is-missing", !exists);
-    })
+          const mark = (exists) => {
+            slot.classList.toggle("is-missing", !exists);
+            resolve();
+          };
+
+          video.addEventListener("loadedmetadata", () => mark(true), { once: true });
+          video.addEventListener("error", () => mark(false), { once: true });
+          video.load();
+        })
+    )
   );
 }
 
