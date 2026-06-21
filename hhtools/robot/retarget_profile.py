@@ -146,11 +146,6 @@ _UPPER_BODY_CANONICAL = frozenset({
     "right_collar",
 })
 
-# Shoulder yaml values drive lateral IK + roll narrowing only.  Applying them
-# to the geocentric scaler also shrinks the vertical root→shoulder offset and
-# makes the solved robot squat while the hands look correct.
-_NARROWING_ONLY_CANONICAL = frozenset({"left_shoulder", "right_shoulder"})
-
 _narrowing_ratios_cache: dict[tuple[object, ...], dict[str, float]] = {}
 
 
@@ -293,11 +288,7 @@ def _active_joint_scale_overrides_for_model(
     active, _ = _yaml_active_scale_edits(
         preset, robot_model, calibration=calibration,
     )
-    return {
-        k: v
-        for k, v in active.items()
-        if k not in _NARROWING_ONLY_CANONICAL
-    }
+    return dict(active)
 
 
 def apply_upper_body_lateral_ik_narrowing(
@@ -397,8 +388,30 @@ def effective_ik_t_weight(
     return float(base_weight) * boost
 
 
+def _shoulder_side_from_dof(name: str) -> str | None:
+    """Best-effort left/right from a DOF name (``left``, ``l_``, ``Left_``, …)."""
+
+    low = name.lower()
+    if "left" in low or low.startswith("l_"):
+        return "left"
+    if "right" in low or low.startswith("r_"):
+        return "right"
+    return None
+
+
+def _is_shoulder_roll_dof(name: str) -> bool:
+    """True for ``*_shoulder_roll_*`` or abbreviated ``*_shoulder_r_*`` (Ultron)."""
+
+    low = name.lower()
+    if "shoulder" not in low:
+        return False
+    if "roll" in low:
+        return True
+    return "shoulder_r_" in low or low.endswith("shoulder_r_joint")
+
+
 def _infer_shoulder_roll_joints(preset: "RobotPreset") -> dict[str, str]:
-    """Map canonical shoulders → outer roll DOF names (best-effort)."""
+    """Map canonical shoulders → shoulder-roll DOF names (best-effort)."""
 
     block = _reload_retarget_block(preset)
     explicit = block.get("shoulder_roll_joints")
@@ -406,16 +419,82 @@ def _infer_shoulder_roll_joints(preset: "RobotPreset") -> dict[str, str]:
         return {str(k): str(v) for k, v in explicit.items()}
 
     rolls: dict[str, str] = {}
-    for canon, prefix in (
-        ("left_shoulder", "l_arm"),
-        ("right_shoulder", "r_arm"),
-    ):
-        for dof in preset.dof_order:
-            name = str(dof)
-            if prefix in name and "shoulder_r" in name:
-                rolls[canon] = name
-                break
+    for dof in preset.dof_order:
+        name = str(dof)
+        side = _shoulder_side_from_dof(name)
+        if side is None or not _is_shoulder_roll_dof(name):
+            continue
+        canon = f"{side}_shoulder"
+        if canon not in rolls:
+            rolls[canon] = name
     return rolls
+
+
+def _shoulder_roll_scale_ratios(
+    preset: "RobotPreset",
+    robot_model: "URDFRobotModel | None" = None,
+) -> dict[str, float]:
+    """Yaml shoulder scale ÷ calibration baseline (falls back to URDF narrowing)."""
+
+    if robot_model is None:
+        return {
+            k: float(v)
+            for k, v in joint_scale_narrowing_ratios(
+                preset, robot_model=robot_model,
+            ).items()
+            if k in ("left_shoulder", "right_shoulder")
+        }
+
+    from hhtools.retarget.calibration.calibration import (
+        load_calibration,
+        resolve_calibration_file,
+    )
+    from hhtools.robot.joint_scales import _CALIBRATION_REF_ORDER
+
+    calibration = None
+    for ref in _CALIBRATION_REF_ORDER:
+        cal_path = resolve_calibration_file(preset.root_dir, ref)
+        if cal_path is None or not cal_path.is_file():
+            continue
+        try:
+            cal = load_calibration(cal_path)
+            if cal.robot and cal.robot != preset.name:
+                continue
+            calibration = cal
+            break
+        except Exception:
+            continue
+
+    if calibration is None:
+        return {
+            k: float(v)
+            for k, v in joint_scale_narrowing_ratios(
+                preset, robot_model=robot_model,
+            ).items()
+            if k in ("left_shoulder", "right_shoulder")
+        }
+
+    active, baselines = _yaml_active_scale_edits(
+        preset, robot_model, calibration=calibration,
+    )
+    ratios: dict[str, float] = {}
+    narrow_fallback = joint_scale_narrowing_ratios(
+        preset, robot_model=robot_model,
+    )
+    for canon in ("left_shoulder", "right_shoulder"):
+        yaml_val = active.get(canon)
+        base = baselines.get(canon)
+        if yaml_val is not None and base is not None and float(base) > 1e-6:
+            ratios[canon] = float(yaml_val) / float(base)
+        elif canon in narrow_fallback:
+            ratios[canon] = float(narrow_fallback[canon])
+    return ratios
+
+
+# Radians of shoulder-roll abduction per unit (scale_ratio - 1) when yaml
+# shoulder scale exceeds calibration (e.g. ratio 1.5 → +0.20 rad ≈ 11°).
+_SHOULDER_ROLL_WIDEN_GAIN: float = 0.40
+_SHOULDER_ROLL_WIDEN_MAX: float = 0.85
 
 
 def apply_upper_body_roll_narrowing_post_ik(
@@ -426,17 +505,17 @@ def apply_upper_body_roll_narrowing_post_ik(
     root_coord_count: int,
     robot_model: "URDFRobotModel | None" = None,
 ) -> "NDArray":
-    """Scale shoulder-roll abduction after IK (Ultron-like gimbal robots).
+    """Adjust shoulder roll after IK from yaml shoulder scale vs calibration.
 
-    Position-only IK narrowing often cannot move pitch links enough; roll
-    DOFs dominate perceived shoulder width on 3-DOF shoulders.
+    3-DOF shoulder IK often leaves pitch-link separation at the URDF rest
+    width; roll abduction is the practical DOF for perceived shoulder span.
+    Narrow when yaml scale < baseline (× ratio); abduct when yaml scale >
+    baseline (+ gain × (ratio − 1)).
     """
 
     import numpy as np
 
-    ratios = joint_scale_narrowing_ratios(
-        preset, robot_model=robot_model,
-    )
+    ratios = _shoulder_roll_scale_ratios(preset, robot_model=robot_model)
     rolls = _infer_shoulder_roll_joints(preset)
     if not rolls or not ratios:
         return joint_q
@@ -444,12 +523,18 @@ def apply_upper_body_roll_narrowing_post_ik(
     out = np.asarray(joint_q, dtype=np.float32).copy()
     for canon, roll_joint in rolls.items():
         ratio = ratios.get(canon)
-        if ratio is None or float(ratio) >= 1.0:
+        if ratio is None or abs(float(ratio) - 1.0) <= 1e-3:
             continue
         if roll_joint not in dof_names:
             continue
         col = int(root_coord_count) + int(dof_names.index(roll_joint))
-        out[:, col] = out[:, col] * np.float32(ratio)
+        r = float(ratio)
+        if r < 1.0:
+            out[:, col] = out[:, col] * np.float32(r)
+            continue
+        widen = min((r - 1.0) * _SHOULDER_ROLL_WIDEN_GAIN, _SHOULDER_ROLL_WIDEN_MAX)
+        sign = 1.0 if "left" in canon else -1.0
+        out[:, col] = out[:, col] + np.float32(sign * widen)
     return out
 
 
