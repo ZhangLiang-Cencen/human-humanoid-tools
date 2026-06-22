@@ -37,7 +37,7 @@ _log = logging.getLogger(__name__)
 
 # Bump when static/ front-end behaviour changes.  Injected into ``index.html``
 # at serve time so collaborators only need to pull + restart (no triple-sync).
-UI_BUILD_ID = "20260617-v82"
+UI_BUILD_ID = "20260622-v83"
 
 # Datasets whose adapters accept ``with_mesh=True`` (SMPL forward → baked vertices).
 # The web UI always requests mesh so AMASS / Motion-X etc. show a real body surface,
@@ -837,27 +837,42 @@ def create_app(
         if not files:
             raise HTTPException(status_code=400, detail="empty upload")
 
+        from hhtools.web.upload_resolve import enumerate_upload_clips
+
         rel_paths = [str(Path(uf.filename or "")) for uf in files]
         folder_label = str(library_folder_label or "").strip() or None
+
+        # Always buffer browser bytes first so a bad on-disk symlink guess
+        # cannot discard the only copy of the clip (see link_to_library).
+        drop = state.upload_root / uuid.uuid4().hex[:8]
+        drop.mkdir(parents=True, exist_ok=True)
+        for uf in files:
+            rel = Path(uf.filename or "upload.bin")
+            dst = drop / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with dst.open("wb") as fp:
+                fp.write(await uf.read())
 
         try:
             lib_dir, label, materialize_mode = materialize_drop(
                 rel_paths,
                 folder_label=folder_label,
             )
+            if not enumerate_upload_clips(lib_dir, profile):
+                raise FileNotFoundError(
+                    "symlinked library folder contains no recognizable clips"
+                )
         except FileNotFoundError:
-            drop = state.upload_root / uuid.uuid4().hex[:8]
-            drop.mkdir(parents=True, exist_ok=True)
-            for uf in files:
-                rel = Path(uf.filename or "upload.bin")
-                dst = drop / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                with dst.open("wb") as fp:
-                    fp.write(await uf.read())
             lib_dir, label, materialize_mode = materialize_drop(
                 rel_paths,
                 folder_label=folder_label,
                 upload_drop=drop,
+            )
+
+        if not enumerate_upload_clips(lib_dir, profile):
+            raise HTTPException(
+                status_code=400,
+                detail="未找到可识别的动作文件（.npz / .bvh / .glb / .pkl …）",
             )
 
         job = Job(id=uuid.uuid4().hex[:12], kind="motion_link")
@@ -2085,14 +2100,25 @@ def _library_entry_from_upload(
 
 def _load_clip_for_batch(entry_dict: dict, entry, cache):
     """Load a basket clip — uploaded paths bypass adapter-only cache conversion."""
+    import dataclasses
+
     from hhtools.viewer.cache import _attach_library_folder_label
+    from hhtools.web.motion_library_links import resolve_clip_on_disk
     from hhtools.web.upload_resolve import load_clip_at_path
 
+    resolved = resolve_clip_on_disk(
+        entry.source_path,
+        extra_names=[entry_dict.get("sequence_id") or ""],
+    )
+    entry_dict = dict(entry_dict)
+    entry_dict["source_path"] = str(resolved)
+
     if entry_dict.get("origin") != "upload":
+        entry = dataclasses.replace(entry, source_path=resolved)
         return cache.load_motion(entry)
 
     motion, dataset = load_clip_at_path(
-        entry.source_path,
+        resolved,
         entry_dict.get("upload_profile") or "mimic",
         clip_kind=entry_dict.get("clip_kind") or "",
         load_motion_file=_load_motion_file,

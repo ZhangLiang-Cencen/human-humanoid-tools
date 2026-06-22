@@ -60,7 +60,7 @@ Paths: bundled presets under `configs/robots/<name>/`; Web uploads under `~/.con
 |---------|---------|
 | `ik_map` | Canonical human joint → URDF link. On 3-DOF hips/shoulders, map to the **middle** link (usually `*_roll_link`). |
 | `weights` | IK priorities: `t_weight` (position), `r_weight` (orientation). |
-| `smooth_joint_filter_masks` | Damp redundant pitch/yaw DOFs left in the null space of gimbal targets. |
+| **`smooth_joint_filter_masks`** | **High-impact IK regulariser** (pairs with default `smooth_joint_filter_weight: 5.5` in the pipeline). Per-link values in `[0, 1]` scale a *midpoint pull* on each joint — **not** the same as `weights`. Scaffold defaults (`*_shoulder_roll_link: 1.0`) suit G1/RP1-style gimbals where roll is null-space; on uploaded URDFs whose **arm pose is driven mainly by shoulder roll**, **`1.0` can lock the arms open** and block tracking even when `weights` look correct. **Lower roll to `0.1`–`0.3`** (or `0` for max arm freedom) if retarget arms stay abducted while the yellow overlay hangs down; keep pitch/yaw masks moderate for stability. |
 | `retarget.joint_scale_multipliers` | Per-canonical **absolute** scale (same units as calibration `derived.scales`). Written after calibration; edit individual keys to fine-tune body proportions without re-calibrating. Example: `left_shoulder: 0.5` narrows the upper body. **Shoulders** affect lateral IK + shoulder roll only (not vertical height). Values equal to calibration are ignored. |
 | `retarget.feet_stabilizer`, `apply_feet_stabilizer` | Foot planting and body-ground clearance; set `apply_feet_stabilizer: false` for rolls / flips. |
 | `retarget.references.<format>` | Per motion-format overrides (e.g. bundled `scaler_config`). |
@@ -72,6 +72,18 @@ retarget:
     right_shoulder: 0.5
     left_elbow: 1.0
     # … other ik_map keys; omit or leave at calibration values for no change
+```
+
+**`smooth_joint_filter_masks` example** — if arms stay in an A-pose while mocap arms hang down, check this *before* only tweaking `weights`:
+
+```yaml
+smooth_joint_filter_masks:
+  left_shoulder_pitch_link: 0.1
+  left_shoulder_roll_link: 0.1   # not 1.0 when roll must move for arm tracking
+  left_shoulder_yaw_link: 0.3
+  right_shoulder_pitch_link: 0.1
+  right_shoulder_roll_link: 0.1
+  right_shoulder_yaw_link: 0.3
 ```
 
 Template and field notes: [`configs/robots/_template/robot.yaml`](configs/robots/_template/robot.yaml). Re-uploading a URDF regenerates `robot.yaml` from the URDF (calibration files are kept; hand-edited `ik_map` / weights may be overwritten).

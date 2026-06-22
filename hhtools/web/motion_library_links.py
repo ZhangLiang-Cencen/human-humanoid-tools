@@ -80,6 +80,13 @@ def candidate_search_roots() -> list[Path]:
         home / "motions",
         Path("/home/motions"),
     ]
+    # ``~/syj/motions``, ``~/projects/motions``, … without hard-coding usernames.
+    try:
+        for child in sorted(home.iterdir()):
+            if child.is_dir():
+                raw.append(child / "motions")
+    except OSError:
+        pass
     extra = os.environ.get("HHTOOLS_MOTION_SEARCH_PATHS", "")
     if extra:
         raw.extend(p.strip() for p in extra.split(os.pathsep) if p.strip())
@@ -119,6 +126,67 @@ def _discover_source_root(user_root: Path, rels: list[str]) -> Path | None:
     return None
 
 
+def _resolve_single_clip_under_roots(
+    rel: str,
+    search_roots: list[Path] | None = None,
+) -> Path | None:
+    """Find one clip by relative path or basename under known motion trees."""
+    rel = str(rel or "").replace("\\", "/").lstrip("/")
+    if not rel:
+        return None
+    roots = search_roots if search_roots is not None else candidate_search_roots()
+    name = PurePosixPath(rel).name
+    for root in roots:
+        direct = root / rel
+        if direct.is_file():
+            return direct.resolve()
+        if rel != name:
+            continue
+        try:
+            matches = [p for p in root.rglob(name) if p.is_file()]
+        except OSError:
+            continue
+        if not matches:
+            continue
+        matches.sort(key=lambda p: (len(p.parts), str(p)))
+        return matches[0].resolve()
+    return None
+
+
+def resolve_clip_on_disk(
+    source_path: str | Path,
+    *,
+    extra_names: list[str] | None = None,
+) -> Path:
+    """Return an existing clip path, searching server motion trees when stale.
+
+    Batch baskets often store ``~/.config/hhtools/motions/<label>/<clip>.bvh``
+    even when only one clip was copied during a multi-file browser drop.  When
+    the recorded path is missing, locate the same basename under
+    :func:`candidate_search_roots` (``~/syj/motions``, ``HHTOOLS_MOTION_SEARCH_PATHS``, …).
+    """
+    recorded = Path(source_path).expanduser()
+    try:
+        if recorded.is_file():
+            return recorded.resolve()
+    except OSError:
+        pass
+
+    names: list[str] = []
+    if recorded.name:
+        names.append(recorded.name)
+    for raw in extra_names or ():
+        n = PurePosixPath(str(raw).replace("\\", "/")).name
+        if n and n not in names:
+            names.append(n)
+
+    for name in names:
+        found = _resolve_single_clip_under_roots(name)
+        if found is not None:
+            return found
+    raise FileNotFoundError(f"BVH sequence not found: {recorded}")
+
+
 def _source_dir_from_resolved(
     root: Path,
     rels: list[str],
@@ -155,14 +223,26 @@ def _resolve_source_files(relative_paths: list[str]) -> tuple[Path, list[Path]]:
         resolved: list[Path] = []
         try:
             for rel in rels:
-                candidate = (root / rel).resolve()
-                candidate.relative_to(root)
+                candidate = root / rel
                 if not candidate.is_file():
                     raise FileNotFoundError(candidate)
-                resolved.append(candidate)
+                # Do not require ``resolve()`` to stay under ``root`` — library
+                # folders are often symlinks to the user's motion tree.
+                resolved.append(candidate.resolve())
         except (FileNotFoundError, ValueError):
             continue
         return root, resolved
+
+    # Loose clips scattered in different subfolders (e.g. ``20260429_mocap/*/*.bvh``).
+    per_file: list[Path] = []
+    for rel in rels:
+        found = _resolve_single_clip_under_roots(rel)
+        if found is None:
+            per_file = []
+            break
+        per_file.append(found)
+    if per_file:
+        return _source_dir_from_resolved(per_file[0].parent, rels, per_file), per_file
 
     raise FileNotFoundError("在服务器常用目录中未找到与拖入文件匹配的数据集")
 
@@ -258,11 +338,39 @@ def materialize_drop(
     label = _infer_folder_label(_normalize_relpaths(relative_paths), folder_label)
     rels = _normalize_relpaths(relative_paths)
 
+    # Multiple loose files (often from different capture folders): link each clip
+    # into the library instead of requiring a single shared parent directory.
+    if rels and all("/" not in r and "\\" not in r for r in rels) and len(rels) > 1:
+        try:
+            resolved = auto_resolve_source_files(rels)
+            dest_root = ensure_motions_library() / label
+            dest_root.mkdir(parents=True, exist_ok=True)
+            for rel, src in zip(rels, resolved, strict=True):
+                dest = dest_root / PurePosixPath(rel).name
+                try:
+                    if dest.exists() and dest.resolve() == src.resolve():
+                        continue
+                except OSError:
+                    pass
+                if dest.exists() or dest.is_symlink():
+                    dest.unlink(missing_ok=True)
+                dest.symlink_to(src)
+            return dest_root, dest_root.name, "symlink"
+        except FileNotFoundError:
+            pass
+
     # Single loose file: reuse an existing folder symlink when present; otherwise
     # link only that clip (not the whole parent directory).
     if len(rels) == 1 and "/" not in rels[0]:
         try:
-            source_file = auto_resolve_source_files(rels)[0]
+            source_file = auto_resolve_source_files(rels)[0].resolve()
+            lib_root = motions_library_root().resolve()
+            try:
+                source_file.relative_to(lib_root)
+                parent = source_file.parent
+                return parent, parent.name, "symlink"
+            except ValueError:
+                pass
             parent = source_file.parent.resolve()
             existing = _existing_library_link_for_dir(parent)
             if existing is not None:
@@ -293,6 +401,17 @@ def link_to_library(path: str | Path, *, folder_label: str | None = None) -> Pat
         dest_root = ensure_motions_library() / label
         dest_root.mkdir(parents=True, exist_ok=True)
         dest = dest_root / target.name
+        # Already materialised (upload copy) — never replace with a self-symlink.
+        try:
+            if dest.exists() and dest.resolve() == target.resolve():
+                return dest_root
+        except OSError:
+            pass
+        try:
+            target.relative_to(dest_root.resolve())
+            return dest_root
+        except ValueError:
+            pass
         if dest.exists() or dest.is_symlink():
             dest.unlink(missing_ok=True)
         dest.symlink_to(target)
@@ -378,5 +497,6 @@ __all__ = [
     "materialize_upload_tree",
     "motions_library_root",
     "remove_library_folder",
+    "resolve_clip_on_disk",
     "scan_motions_library",
 ]

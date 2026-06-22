@@ -60,7 +60,7 @@ uv run hhtools web
 |------|------|
 | `ik_map` | 标准人体关节 → URDF link。三自由度髋/肩应映射到**中间** link（多为 `*_roll_link`）。 |
 | `weights` | IK 权重：`t_weight` 位置、`r_weight` 朝向。 |
-| `smooth_joint_filter_masks` | 压低 gimbal 链上 pitch/yaw 等冗余自由度。 |
+| **`smooth_joint_filter_masks`** | **对 retarget 姿态影响很大的 IK 正则项**（与 pipeline 默认 `smooth_joint_filter_weight: 5.5` 配合）。按 link 名给 `[0, 1]` 系数，把关节往限位**中点**拉——**不是** `weights` 里的 tracking 权重。脚手架默认（如 `*_shoulder_roll_link: 1.0`）适合 G1/RP1 那种 roll 主要在 null space 的万向节；对**上传 URDF** 若手臂主要靠 **shoulder roll** 才能垂下，**`1.0` 会把手臂锁在张开位**，即使 `weights` 已调高也不跟踪。黄色骨架已下垂、机器人仍张臂时，**优先把 roll 降到 `0.1`–`0.3`**（要最大自由度可用 `0`），pitch/yaw 可保持中等以防抖动。 |
 | `retarget.joint_scale_multipliers` | 各 canonical 关节的**绝对**缩放（与标定 `derived.scales` 同单位）。标定后会写入；可逐项微调体型，无需重新标定。例如 `left_shoulder: 0.5` 收窄上半身。**肩**只影响横向 IK 与 shoulder roll，不改变竖直身高；与标定值相同则视为未修改。 |
 | `retarget.feet_stabilizer`、`apply_feet_stabilizer` | 脚底贴地、身体离地高度等；翻滚类动作可设 `apply_feet_stabilizer: false`。 |
 | `retarget.references.<格式>` | 按动作格式覆盖（如 bundled `scaler_config`）。 |
@@ -72,6 +72,18 @@ retarget:
     right_shoulder: 0.5
     left_elbow: 1.0
     # … 其余 ik_map 关节；与标定一致可省略
+```
+
+**`smooth_joint_filter_masks` 示例** — 若 mocap 手臂下垂、机器人仍 A 字张开，**先查此项**，不要只改 `weights`：
+
+```yaml
+smooth_joint_filter_masks:
+  left_shoulder_pitch_link: 0.1
+  left_shoulder_roll_link: 0.1   # 需要 roll 参与摆臂时不要用 1.0
+  left_shoulder_yaw_link: 0.3
+  right_shoulder_pitch_link: 0.1
+  right_shoulder_roll_link: 0.1
+  right_shoulder_yaw_link: 0.3
 ```
 
 完整模板见 [`configs/robots/_template/robot.yaml`](configs/robots/_template/robot.yaml)。**重新上传 URDF** 会按 URDF 重新生成 `robot.yaml`（标定文件保留；手改的 `ik_map` / weights 可能被覆盖）。

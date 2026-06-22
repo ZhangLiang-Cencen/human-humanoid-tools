@@ -102,8 +102,12 @@ def estimate_robot_standing_height(
     ``z`` bounds of:
 
     * every **visual** mesh in the yourdfpy scene (what the viewer draws);
-    * every **collision** mesh when a collision scene graph is available;
-    * every MuJoCo **geom** bounding sphere when ``mujoco_model`` compiled.
+    * every **collision** mesh when a collision scene graph is available.
+
+    MuJoCo **geom** bounding-sphere bounds are used only as a *fallback* when
+    no mesh geometry is available: bounding spheres add their radius past the
+    real mesh extent and over-estimate stature by 10-15%, which would inflate
+    the yellow overlay's ``model_height / human_height`` uniform scale.
 
     Returns ``max_z − min_z`` over that union, scaled by
     ``preset.length_scale``.  This is the same vertical span
@@ -112,7 +116,15 @@ def estimate_robot_standing_height(
     """
     q = dict(joint_q) if joint_q is not None else model.zero_configuration()
     saved_q = model.zero_configuration()
-    bounds: list[tuple[float, float]] = []
+    # Exact mesh-vertex bounds (visual / collision) are the source of truth.
+    # MuJoCo geom bounds use per-geom *bounding spheres*, which add the sphere
+    # radius above the head and below the feet (over-estimating stature by
+    # 10-15%).  An inflated ``model_height`` enlarges the yellow overlay's
+    # ``model_height / human_height`` uniform scale and floats the scaled
+    # shoulders up to the robot's head.  Only fall back to MuJoCo bounds when
+    # no mesh geometry is available (primitive-only / mesh-load failure).
+    mesh_bounds: list[tuple[float, float]] = []
+    mj_bounds: list[tuple[float, float]] = []
 
     try:
         model.apply_configuration(q)
@@ -120,7 +132,7 @@ def estimate_robot_standing_height(
         try:
             b = _trimesh_scene_z_bounds(model.trimesh_scene(collision=False))
             if b is not None:
-                bounds.append(b)
+                mesh_bounds.append(b)
         except Exception as exc:
             _log.debug("visual mesh z-bounds failed for %r: %s", model.preset.name, exc)
 
@@ -129,29 +141,31 @@ def estimate_robot_standing_height(
             if coll_scene is not None:
                 b = _trimesh_scene_z_bounds(coll_scene)
                 if b is not None:
-                    bounds.append(b)
+                    mesh_bounds.append(b)
         except Exception as exc:
             _log.debug("collision mesh z-bounds failed for %r: %s", model.preset.name, exc)
 
-        try:
-            from hhtools.retarget.interaction_mesh.mujoco_scene import (
-                require_mujoco_model,
-            )
+        if not mesh_bounds:
+            try:
+                from hhtools.retarget.interaction_mesh.mujoco_scene import (
+                    require_mujoco_model,
+                )
 
-            mj_model = require_mujoco_model(model)
-            import mujoco
+                mj_model = require_mujoco_model(model)
+                import mujoco
 
-            mj_data = mujoco.MjData(mj_model)
-            _set_mujoco_joint_q(mj_model, mj_data, q)
-            b = _mujoco_geom_z_bounds(mj_model, mj_data)
-            if b is not None:
-                bounds.append(b)
-        except Exception as exc:
-            _log.debug("MuJoCo geom z-bounds failed for %r: %s", model.preset.name, exc)
+                mj_data = mujoco.MjData(mj_model)
+                _set_mujoco_joint_q(mj_model, mj_data, q)
+                b = _mujoco_geom_z_bounds(mj_model, mj_data)
+                if b is not None:
+                    mj_bounds.append(b)
+            except Exception as exc:
+                _log.debug("MuJoCo geom z-bounds failed for %r: %s", model.preset.name, exc)
 
     finally:
         model.apply_configuration(saved_q)
 
+    bounds = mesh_bounds if mesh_bounds else mj_bounds
     if not bounds:
         _log.warning(
             "No URDF / MuJoCo geometry for robot %r — falling back to 1.3 m",

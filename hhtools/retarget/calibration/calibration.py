@@ -805,6 +805,25 @@ def build_scaler_config_from_calibration(
         rest_pose = rest_pose_from_bundled_reference("soma_bvh")
     elif _ref == "xsens_mocap" and bundled_reference_bvh_path(_ref) is not None:
         rest_pose = rest_pose_from_bundled_reference("xsens_mocap")
+    elif _ref == "lafan_bvh":
+        # LAFAN / Mixamo BVH: reconstruct the rig's **bind T-pose** from the
+        # clip's own bone lengths (zero local rotations → FK), the same
+        # synthesiser SMPL uses.  Two reasons not to use clip frame 0:
+        #
+        #   * Sport / action captures start in an A-pose "ready" stance, so
+        #     frame 0 is NOT rest.  Using it makes a zero delta map to the
+        #     calibrated T-pose, so the robot's arms snap out to T while the
+        #     yellow overlay still shows the source A-pose.
+        #
+        # And not the bundled canonical reference (``rest_pose_from_reference``)
+        # either: its 17-joint generic proportions don't match the subject's
+        # actual leg/arm lengths, which warps the per-limb scales and crosses
+        # the robot's legs.  Reconstructing from the clip keeps the subject's
+        # true proportions while giving the arms-out T-pose the calibration
+        # was authored against.
+        rest_pose = rest_pose_from_motion_bind(
+            clip, source_tag="build_scaler_config_from_calibration_lafan_bind"
+        )
     elif is_smpl_like(clip.hierarchy.bone_names) or is_meshmimic_holosoma_like(
         clip.hierarchy.bone_names
     ):

@@ -2247,6 +2247,88 @@ document.getElementById("lib-search").oninput = () => renderLibrary();
 document.getElementById("lib-folder").onchange = () => renderLibrary();
 
 // drag-drop helpers (folder-aware)
+function readAllDirectoryEntries(reader) {
+  return new Promise((resolve, reject) => {
+    const entries = [];
+    const readBatch = () => {
+      reader.readEntries((batch) => {
+        if (!batch.length) {
+          resolve(entries);
+          return;
+        }
+        entries.push(...batch);
+        readBatch();
+      }, reject);
+    };
+    readBatch();
+  });
+}
+
+function walkEntry(entry, out, prefix = "") {
+  return new Promise((resolve, reject) => {
+    if (entry.isFile) {
+      entry.file((f) => {
+        f._relpath = prefix + f.name;
+        out.push(f);
+        resolve();
+      }, reject);
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      readAllDirectoryEntries(reader)
+        .then((entries) => Promise.all(
+          entries.map((e) => walkEntry(e, out, `${prefix}${entry.name}/`)),
+        ))
+        .then(() => resolve())
+        .catch(reject);
+    } else {
+      resolve();
+    }
+  });
+}
+
+async function collectDroppedFiles(dataTransfer) {
+  const files = [];
+  // Prefer the entry API: it recurses into dropped folders AND distinguishes a
+  // real file from a *directory*.  A dropped folder shows up in
+  // ``dataTransfer.files`` as a single zero-byte, type-less File whose body
+  // cannot be read — appending it to FormData makes the upload ``fetch`` reject
+  // with "Failed to fetch".  ``webkitGetAsEntry`` must be called synchronously
+  // while the drop event's items are still alive, so capture every entry first,
+  // then walk them.
+  const items = dataTransfer?.items;
+  if (items?.length) {
+    const entries = [];
+    const looseFiles = [];
+    for (const it of items) {
+      const entry = it.webkitGetAsEntry?.();
+      if (entry) entries.push(entry);
+      else {
+        const f = it.getAsFile?.();
+        if (f) looseFiles.push(f);
+      }
+    }
+    if (entries.length) await Promise.all(entries.map((e) => walkEntry(e, files)));
+    for (const f of looseFiles) {
+      f._relpath = f._relpath || f.webkitRelativePath || f.name;
+      files.push(f);
+    }
+    if (files.length) return files;
+  }
+  // Fallback for browsers without the entry API: a flat file list only. Best-
+  // effort skip of a dropped folder, which surfaces here as a zero-byte,
+  // type-less, extension-less File that would break the upload fetch.
+  if (dataTransfer?.files?.length) {
+    for (const f of dataTransfer.files) {
+      if (!f) continue;
+      const looksLikeDir = f.size === 0 && !f.type && !/\.[^/.]+$/.test(f.name || "");
+      if (looksLikeDir) continue;
+      f._relpath = f._relpath || f.webkitRelativePath || f.name;
+      files.push(f);
+    }
+  }
+  return files;
+}
+
 function setupDropzone(el, onFiles) {
   ["dragenter", "dragover"].forEach((ev) =>
     el.addEventListener(ev, (e) => { e.preventDefault(); el.classList.add("hover"); })
@@ -2254,17 +2336,12 @@ function setupDropzone(el, onFiles) {
   ["dragleave", "drop"].forEach((ev) =>
     el.addEventListener(ev, (e) => { e.preventDefault(); el.classList.remove("hover"); })
   );
-  el.addEventListener("drop", async (e) => {
-    const items = e.dataTransfer.items;
-    const files = [];
-    const walks = [];
-    for (const it of items) {
-      const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
-      if (entry) walks.push(walkEntry(entry, files));
-      else if (it.getAsFile) files.push(it.getAsFile());
-    }
-    await Promise.all(walks);
-    if (files.length) onFiles(files);
+  el.addEventListener("drop", (e) => {
+    e.stopPropagation();
+    el.classList.remove("hover");
+    void collectDroppedFiles(e.dataTransfer).then((files) => {
+      if (files.length) onFiles(files);
+    });
   });
 }
 // Hidden <input> based file / folder picker (for environments where native
@@ -2285,20 +2362,6 @@ function pickFiles({ folder = false } = {}) {
     };
     document.body.appendChild(inp);
     inp.click();
-  });
-}
-
-function walkEntry(entry, out, prefix = "") {
-  return new Promise((resolve) => {
-    if (entry.isFile) {
-      entry.file((f) => { f._relpath = prefix + f.name; out.push(f); resolve(); });
-    } else if (entry.isDirectory) {
-      const reader = entry.createReader();
-      reader.readEntries(async (entries) => {
-        await Promise.all(entries.map((e) => walkEntry(e, out, prefix + entry.name + "/")));
-        resolve();
-      });
-    } else resolve();
   });
 }
 

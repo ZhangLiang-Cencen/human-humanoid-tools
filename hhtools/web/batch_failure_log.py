@@ -117,7 +117,12 @@ def _copy_sidecars(src_file: Path, dst_dir: Path) -> None:
 
 def stash_failed_clip(entry: dict, log_root: Path) -> Path:
     """Copy a failed clip (and clip-folder sidecars) into ``log_root``."""
-    src = Path(entry["source_path"]).resolve()
+    from hhtools.web.motion_library_links import resolve_clip_on_disk
+
+    src = resolve_clip_on_disk(
+        entry["source_path"],
+        extra_names=[entry.get("sequence_id") or ""],
+    )
     rel = failure_rel_path(entry)
     if not src.is_file():
         raise FileNotFoundError(f"source clip missing: {src}")
