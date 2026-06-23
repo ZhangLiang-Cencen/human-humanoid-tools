@@ -166,6 +166,10 @@ _DEFAULT_RETARGET: dict[str, object] = {
         # helps narrow-hip / wide-foot robots whose feet would otherwise clip.
         "min_foot_clearance": 0.02,
     },
+    # Post-IK foot-ground clamp rate limit (see _yaml_header for the full knob
+    # docs).  Rate-limits the ground-penetration root lift so a single frame
+    # can't teleport the body in Z on flips / fast motion.
+    "foot_clamp_max_lift_rate": 0.02,
 }
 
 
@@ -793,7 +797,19 @@ def _yaml_header(name: str, urdf_rel: str) -> str:
         f"# (distal wrist/ankle/end-effector links).  Double-check mappings\n"
         f"# (especially shoulder/elbow and ankle/foot) before running\n"
         f"# retarget, or run `hhtools robot validate {name}`.  Canonical\n"
-        f"# slot names come from configs/skeleton_presets/canonical_human.yaml.\n\n"
+        f"# slot names come from configs/skeleton_presets/canonical_human.yaml.\n"
+        f"#\n"
+        f"# Post-IK foot-ground clamp (``_clamp_solved_foot_heights``) knobs,\n"
+        f"# all optional under ``retarget:``:\n"
+        f"#   foot_clamp_max_lift_rate — max per-frame upward root lift (m).\n"
+        f"#     Rate-limits the ground-penetration lift so a single frame can't\n"
+        f"#     teleport the body in Z (the \"robot suddenly jumps up/down on\n"
+        f"#     flips\" artefact).  Default 0.02 (~2.4 m/s); feet stay grounded.\n"
+        f"#   foot_clamp_anti_penetration — set ``false`` to switch the upward\n"
+        f"#     lift OFF entirely (feet may clip through the floor; prefer the\n"
+        f"#     rate limiter above unless you handle grounding yourself).\n"
+        f"#   foot_clamp_anti_float — ``false`` disables only the downward\n"
+        f"#     float-removal correction.\n\n"
     )
 
 

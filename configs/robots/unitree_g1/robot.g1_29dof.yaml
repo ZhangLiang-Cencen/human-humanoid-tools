@@ -137,18 +137,35 @@ feet:
   foot_height: 0.02
 rest_offsets: {}
 retarget:
+  # Warm-up / cool-down IK passes on the first/last target so the per-frame
+  # solver enters and leaves the clip already converged (matches RP1).  Trimmed
+  # from the output, purely internal.
+  num_initialization_frames: 10
+  num_stabilization_frames: 5
+  # Post-IK foot-ground clamp (``_clamp_solved_foot_heights``) knobs:
+  #   foot_clamp_max_lift_rate  — max per-frame upward root lift (m).  The lift
+  #     used to be instantaneous and caused single-frame "robot jumps up/down
+  #     in Z" on flips; this rate-limits it (default 0.02 ≈ 2.4 m/s) so the
+  #     correction is spread over a few frames while feet stay grounded.
+  #   foot_clamp_anti_penetration — set ``false`` to switch the upward lift OFF
+  #     entirely (no vertical correction; feet may clip through the floor during
+  #     fast / inverted motion).  Prefer the rate limiter above unless you want
+  #     the raw IK root trajectory and handle grounding yourself.
+  #   foot_clamp_anti_float — ``false`` disables only the *downward* float-removal.
+  foot_clamp_max_lift_rate: 0.02
+  foot_clamp_anti_penetration: false
   joint_scale_multipliers:
     hips: 1.0
-    chest: 0.1262
-    left_shoulder: 0.5932
-    left_elbow: 0.7666
-    left_wrist: 0.9092
-    right_shoulder: 0.5972
-    right_elbow: 0.7957
-    right_wrist: 0.9574
-    left_hip: 1.0103
-    left_knee: 1.0103
-    left_ankle: 0.8743
-    right_hip: 1.011
-    right_knee: 1.011
-    right_ankle: 0.8743
+    chest: 0.2256
+    left_shoulder: 0.7483
+    left_elbow: 0.8164
+    left_wrist: 0.8489
+    right_shoulder: 0.7482
+    right_elbow: 0.8164
+    right_wrist: 0.8489
+    left_hip: 1.7347
+    left_knee: 1.0084
+    left_ankle: 0.9056
+    right_hip: 1.7347
+    right_knee: 1.0084
+    right_ankle: 0.9056

@@ -34,8 +34,49 @@ __all__ = [
     "update_robot_yaml_ik_map",
     "update_robot_yaml_joint_scale_multipliers",
     "update_robot_yaml_smooth_joint_filter_masks",
+    "ensure_foot_clamp_retarget_defaults",
     "load_robot_yaml",
 ]
+
+
+_FOOT_CLAMP_KNOB_COMMENT = (
+    "Post-IK foot-ground clamp (_clamp_solved_foot_heights) knobs:\n"
+    "  foot_clamp_max_lift_rate — max per-frame upward root lift (m); rate-limits\n"
+    "    the ground-penetration lift so a single frame can't teleport the body in\n"
+    '    Z (the "robot suddenly jumps up/down on flips" artefact).  Default 0.02.\n'
+    "  foot_clamp_anti_penetration: false — switch the upward lift OFF entirely\n"
+    "    (feet may then clip through the floor; prefer the rate limiter above).\n"
+    "  foot_clamp_anti_float: false — disable only the downward float-removal.\n"
+)
+
+
+def ensure_foot_clamp_retarget_defaults(retarget) -> None:
+    """Surface the post-IK foot-clamp knobs + docs in a ``retarget`` map.
+
+    Idempotently inserts ``foot_clamp_max_lift_rate`` (default ``0.02``) with an
+    explanatory comment block covering all three foot-clamp knobs, so users
+    discover the tunables in their ``robot.yaml`` after a calibration save
+    instead of having to know the parameter names.  Never overwrites a value the
+    user already set, and is a no-op once the key is present.
+    """
+
+    if retarget is None or "foot_clamp_max_lift_rate" in retarget:
+        return
+    keys = list(retarget.keys())
+    pos = (
+        keys.index("joint_scale_multipliers")
+        if "joint_scale_multipliers" in keys
+        else len(keys)
+    )
+    retarget.insert(pos, "foot_clamp_max_lift_rate", 0.02)
+    try:
+        retarget.yaml_set_comment_before_after_key(
+            "foot_clamp_max_lift_rate",
+            before=_FOOT_CLAMP_KNOB_COMMENT,
+            indent=2,
+        )
+    except (AttributeError, KeyError):  # comment API best-effort only
+        pass
 
 
 def _yaml_rt():
@@ -191,6 +232,10 @@ def update_robot_yaml_joint_scale_multipliers(
         for k, v in scales.items():
             if k not in seen:
                 existing[k] = round(float(v), 4)
+
+    # Surface the post-IK foot-clamp tunables (+ docs) so a calibration save
+    # teaches users the knobs exist without manual editing.
+    ensure_foot_clamp_retarget_defaults(retarget)
 
     with path.open("w", encoding="utf-8") as fp:
         yaml_io.dump(data, fp)

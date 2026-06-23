@@ -355,6 +355,18 @@ class PipelineConfig:
     smooth_joint_filter_masks: dict[str, float] | None = None
     max_joint_velocity: float = 0.0
     max_root_angular_velocity: float = 0.0
+    # Multiplier on the *source* root angular speed used as the per-frame
+    # root-rotation rate cap (in addition to ``max_root_angular_velocity``
+    # as a floor).  Per-frame Newton IK has no temporal coupling, so near
+    # singular / redundant trunk poses (somersaults, cartwheels) the LM
+    # solver can hop to a different null-space branch and teleport the
+    # floating-base orientation for a single frame even though the source
+    # root barely rotated.  Capping the solved root's frame-to-frame
+    # rotation at ``max(max_root_angular_velocity, source_speed * mult)``
+    # removes those artefact spikes while leaving genuine fast rotation
+    # (the actual flip, where the source is also spinning) untouched.
+    # ``0`` disables the source-relative cap (legacy fixed-cap behaviour).
+    root_angular_velocity_source_multiplier: float = 1.5
     apply_feet_stabilizer: bool = False
     # Warm-up frames prepended to the IK target sequence.  Every prepended
     # frame is a copy of the clip's **frame 0** effector target, so the
@@ -414,6 +426,25 @@ class PipelineConfig:
     # oscillate solved ankle height during gait; the rate-limited anti-float
     # correction then pumps root Z and looks like vertical bobbing.
     foot_clamp_anti_float: bool = True
+    # When ``False``, skip the ground-penetration *upward* lift entirely:
+    # ``_clamp_solved_foot_heights`` no longer raises the floating base when
+    # solved ankles dip below the ground plane.  Removes every root-Z bump from
+    # that path (useful when the user wants the raw IK trajectory and handles
+    # grounding downstream) at the cost of letting feet clip through the floor
+    # during fast / inverted motion.  Default ``True`` keeps feet grounded; the
+    # rate limiter (``foot_clamp_max_lift_rate``) already removes the spikes
+    # without sacrificing ground contact, so prefer that unless you explicitly
+    # want no vertical correction at all.
+    foot_clamp_anti_penetration: bool = True
+    # Max per-frame upward root lift (metres) the ground-penetration path of
+    # ``_clamp_solved_foot_heights`` may apply.  The lift used to be unbounded:
+    # during flips / cartwheels the "lowest ankle" estimate swings frame to
+    # frame, so a single frame could push the whole floating base up by several
+    # centimetres and drop it back the next frame — read as the robot suddenly
+    # jumping up/down in Z.  Spreading the correction over a few frames removes
+    # the teleport while still clearing real penetration (verified: min ankle
+    # clearance unchanged).  ``0`` restores the old unbounded immediate lift.
+    foot_clamp_max_lift_rate: float = 0.02
     ik_use_cuda_graph: bool = field(default_factory=_default_ik_use_cuda_graph)
 
 
@@ -743,6 +774,25 @@ class NewtonBasicPipeline:
             robot_model=self.robot,
         )
 
+        # Source-derived root rotation target (real frames, pre-padding).
+        # Frame-to-frame angular velocity is heading-invariant, so this is a
+        # valid reference for the rate limiter even though it runs before
+        # ``_align_root_to_source_heading``.  Used to cap solved-root spikes
+        # relative to how fast the source root actually rotates.
+        _pelvis_col = next(
+            (
+                i
+                for i, e in enumerate(self.ik_mapping.entries)
+                if e.canonical_name in ("hips", "pelvis")
+            ),
+            None,
+        )
+        source_root_quat = (
+            ik_targets[:, _pelvis_col, 3:7].astype(np.float32, copy=True)
+            if _pelvis_col is not None
+            else None
+        )
+
         # 3a. Prepend / append warm-up frames so the IK solver can settle
         # before the real motion starts (and after it ends).  See
         # :attr:`PipelineConfig.num_initialization_frames` for the
@@ -862,6 +912,7 @@ class NewtonBasicPipeline:
         if self.config.max_joint_velocity > 0.0:
             joint_q_all = self._rate_limit(
                 root7=root7, dof=dof, framerate=motion.framerate,
+                source_root_quat=source_root_quat,
             )
         else:
             joint_q_all = np.concatenate([root7, dof], axis=1)
@@ -1018,6 +1069,18 @@ class NewtonBasicPipeline:
         )
 
         # --- 4. Post-process per motion (CPU) -------------------------------
+        # Source pelvis rotation column (for the source-relative root angular
+        # velocity cap in ``_rate_limit``).  ``run`` derives this per clip; the
+        # batch path must do the same or the cap collapses to the fixed floor
+        # and genuine fast rotation (flips) gets over-clamped.
+        _pelvis_col = next(
+            (
+                i
+                for i, e in enumerate(entries)
+                if e.canonical_name in ("hips", "pelvis")
+            ),
+            None,
+        )
         results: list[RetargetedMotion | None] = [None] * len(motions)
         for j, orig_idx in enumerate(active_idx):
             m = motions[orig_idx]
@@ -1030,7 +1093,18 @@ class NewtonBasicPipeline:
             else:
                 jq = jq[:real_f]
 
-            results[orig_idx] = self._postprocess_joint_q(jq, m)
+            # Pelvis rotation target for the same real frames (strip the
+            # init / stab padding baked into ``all_targets``).
+            src_root_quat: NDArray | None = None
+            if _pelvis_col is not None:
+                tgt = all_targets[orig_idx]
+                src_root_quat = tgt[
+                    n_init : n_init + real_f, _pelvis_col, 3:7
+                ].astype(np.float32, copy=True)
+
+            results[orig_idx] = self._postprocess_joint_q(
+                jq, m, source_root_quat=src_root_quat,
+            )
 
         # Fill empty-motion slots.
         for i, m in enumerate(motions):
@@ -1271,8 +1345,16 @@ class NewtonBasicPipeline:
         self,
         joint_q_all: NDArray,
         motion: Motion,
+        *,
+        source_root_quat: NDArray | None = None,
     ) -> RetargetedMotion:
-        """Clamp, rate-limit, align and wrap a raw ``(F, coord)`` array."""
+        """Clamp, rate-limit, align and wrap a raw ``(F, coord)`` array.
+
+        ``source_root_quat`` is the per-frame source pelvis rotation (real
+        frames, ``(F, 4)`` xyzw) used to make the root angular-velocity cap
+        source-relative — without it the cap collapses to the fixed floor and
+        genuine fast rotation (flips) gets clamped.  See :meth:`_rate_limit`.
+        """
         root7 = joint_q_all[:, : self.ctx.root_coord_count]
         dof = joint_q_all[:, self.ctx.root_coord_count :]
         n_clamp = min(dof.shape[1], self._ndof_actuated)
@@ -1282,6 +1364,7 @@ class NewtonBasicPipeline:
         if self.config.max_joint_velocity > 0.0:
             joint_q_all = self._rate_limit(
                 root7=root7, dof=dof, framerate=motion.framerate,
+                source_root_quat=source_root_quat,
             )
         else:
             joint_q_all = np.concatenate([root7, dof], axis=1)
@@ -1401,7 +1484,16 @@ class NewtonBasicPipeline:
         rest_ankle = _lowest_ankle_z(self.robot, ik_map, root_rot0)
         rest_foot_z = float(rest_ankle) if rest_ankle is not None else 0.0
 
-        prev_float_correction = 0.0
+        # Signed root-Z correction carried across frames (positive lifts the
+        # base up to clear ground penetration, negative pushes it down to kill
+        # float).  Both directions are rate-limited so neither can teleport the
+        # whole body in a single frame: the unbounded penetration lift was the
+        # source of the "robot suddenly jumps up/down in Z" artefact on flips,
+        # where the lowest-ankle estimate swings rapidly frame to frame.
+        _max_lift_rate = float(self.config.foot_clamp_max_lift_rate)
+        rate_up = _max_lift_rate if _max_lift_rate > 0.0 else float("inf")
+        rate_down = _MAX_CORRECTION_RATE
+        prev_correction = 0.0
         for f in range(out.shape[0]):
             cfg = {
                 dof_names[i]: float(out[f, self.ctx.root_coord_count + i])
@@ -1416,30 +1508,28 @@ class NewtonBasicPipeline:
             root_z = float(out[f, 2])
             world_ankle_z = root_z + float(ankle_z)
 
-            if world_ankle_z < _MIN_ANKLE_Z:
-                out[f, 2] += np.float32(_MIN_ANKLE_Z - world_ankle_z)
-                prev_float_correction = 0.0
-                continue
-
-            target = 0.0
-            if (
+            if world_ankle_z < _MIN_ANKLE_Z and self.config.foot_clamp_anti_penetration:
+                # Ground penetration: desired *upward* lift (>0).
+                desired = _MIN_ANKLE_Z - world_ankle_z
+            elif (
                 self.config.foot_clamp_anti_float
                 and float(ankle_z) > rest_foot_z + _FLOAT_TOL
             ):
+                # Floating foot: desired *downward* correction (<0).
                 uprightness = max(
                     0.0,
                     min(1.0, (root_z - world_ankle_z) / _UPRIGHT_BLEND_RANGE),
                 )
-                target = min(
+                desired = -min(
                     (float(ankle_z) - rest_foot_z - _FLOAT_TOL) * uprightness,
                     _MAX_FLOAT_CORRECTION,
                 )
-            delta = target - prev_float_correction
-            delta = max(-_MAX_CORRECTION_RATE, min(_MAX_CORRECTION_RATE, delta))
-            correction = prev_float_correction + delta
-            prev_float_correction = correction
-            if correction > 0.001:
-                out[f, 2] -= np.float32(correction)
+            else:
+                desired = 0.0
+
+            delta = max(-rate_down, min(rate_up, desired - prev_correction))
+            prev_correction += delta
+            out[f, 2] += np.float32(prev_correction)
         return out
 
     def _clamp_solved_foot_lateral(self, joint_q: NDArray) -> NDArray:
@@ -2026,35 +2116,75 @@ class NewtonBasicPipeline:
     # ---- rate limiter ---------------------------------------------------------
 
     def _rate_limit(
-        self, *, root7: NDArray, dof: NDArray, framerate: float,
+        self,
+        *,
+        root7: NDArray,
+        dof: NDArray,
+        framerate: float,
+        source_root_quat: NDArray | None = None,
     ) -> NDArray:
-        """Clip per-frame joint deltas to ``max_joint_velocity``.
+        """Rate-limit per-frame root rotation and actuated-DOF deltas.
 
-        We only rate-limit the rotational part of the root (quat tail) and
-        the actuated DOFs; position deltas are left alone because a walking
-        subject legitimately moves a few metres per second and a position
-        clip would gate real locomotion to zero.  This mirrors upstream
-        behaviour.
+        The actuated DOFs are clipped to ``max_joint_velocity`` (component
+        delta).  The floating-base root **rotation** is clamped with a
+        proper SLERP step so the cap is an actual angular speed (radians /
+        second), not a per-component quaternion delta — the old component
+        clip neither bounded angular velocity nor renormalised the result.
+
+        The root cap is source-relative:
+        ``max(max_root_angular_velocity, source_speed * mult)``.  Per-frame
+        IK has no temporal coupling, so near singular trunk poses the LM
+        solver can teleport the root orientation for a single frame while
+        the source root is barely moving (verified on the gymnastics BVH:
+        source ~0.9 rad/s, solved root ~43 rad/s).  Tracking the source
+        speed kills those artefacts while leaving the genuine flip — where
+        the source itself spins fast — untouched.  Position deltas are left
+        alone (a moving subject legitimately translates metres per second).
         """
         dt = 1.0 / max(framerate, 1.0)
         max_dq = self.config.max_joint_velocity * dt
-        max_dq_root = (
-            self.config.max_root_angular_velocity * dt
+        floor_root = (
+            self.config.max_root_angular_velocity
             if self.config.max_root_angular_velocity > 0.0
-            else max_dq
+            else self.config.max_joint_velocity
         )
+        mult = float(self.config.root_angular_velocity_source_multiplier)
+
+        # Per-frame source root angular speed (rad/s); 0 when unavailable so
+        # the cap collapses to the fixed ``floor_root``.
+        src_speed: NDArray | None = None
+        if source_root_quat is not None and source_root_quat.shape[0] == root7.shape[0]:
+            qs = Q.normalize(source_root_quat.astype(np.float32))
+            dots = np.abs(np.sum(qs[1:] * qs[:-1], axis=1)).clip(0.0, 1.0)
+            src_speed = (2.0 * np.arccos(dots)) / dt  # (F-1,)
+
+        solved_q = Q.normalize(root7[:, 3:7].astype(np.float32))
 
         out = np.empty((root7.shape[0], root7.shape[1] + dof.shape[1]), dtype=np.float32)
         out[0, : root7.shape[1]] = root7[0]
+        out[0, 3:7] = solved_q[0]
         out[0, root7.shape[1] :] = dof[0]
 
         for frame in range(1, root7.shape[0]):
             prev = out[frame - 1]
             # Position columns (0..3): unclipped.
             out[frame, 0:3] = root7[frame, 0:3]
-            # Root quat (3..7): clip delta.
-            dq_root = np.clip(root7[frame, 3:7] - prev[3:7], -max_dq_root, max_dq_root)
-            out[frame, 3:7] = prev[3:7] + dq_root
+
+            # Root quat (3..7): SLERP-clamp to the source-relative cap.
+            prev_q = prev[3:7]
+            cur_q = solved_q[frame]
+            cap = floor_root
+            if src_speed is not None and mult > 0.0:
+                cap = max(floor_root, float(src_speed[frame - 1]) * mult)
+            max_ang = cap * dt
+            dot = float(np.dot(prev_q, cur_q))
+            target_q = -cur_q if dot < 0.0 else cur_q
+            ang = 2.0 * float(np.arccos(min(abs(dot), 1.0)))
+            if max_ang > 0.0 and ang > max_ang and ang > 1e-6:
+                out[frame, 3:7] = Q.slerp(prev_q, target_q, max_ang / ang)
+            else:
+                out[frame, 3:7] = Q.normalize(target_q)
+
             # DOFs (7..): clip delta.
             dq = np.clip(dof[frame] - prev[7:], -max_dq, max_dq)
             out[frame, 7:] = prev[7:] + dq
