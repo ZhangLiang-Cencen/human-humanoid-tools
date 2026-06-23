@@ -685,6 +685,7 @@ def serialize_robot_trajectory(
     scaled_preview: dict[str, Any] | None = None,
     max_frames: int = _MAX_PLAYBACK_FRAMES,
     ground_follow: bool = False,
+    preserve_absolute_z: bool = False,
 ):
     """Per-frame root transform + DOF values + per-link world transforms.
 
@@ -703,6 +704,12 @@ def serialize_robot_trajectory(
     * ``True``: the per-frame foot-follow correction (mesh sole tracks the
       yellow overlay foot) used for climbing / terrain so the robot stays glued
       to a rising surface.  Costs one ``trimesh_scene`` rebuild per frame.
+
+    ``preserve_absolute_z`` keeps the exported floating-base root height when
+    sidecar terrain is loaded (robot-export / R2R import).  Without it, the
+    default path re-normalises the mesh sole to ``z=0`` at frame 0 — correct
+    for flat AMASS-style CSVs but wrong when a ``*_terrain.obj`` stays at the
+    retarget frame's absolute elevation.
     """
     root = np.asarray(retargeted.root_trajectory, dtype=np.float32)  # (F, 7) xyz+xyzw
     dof = np.asarray(retargeted.dof_trajectory, dtype=np.float32)  # (F, D)
@@ -743,12 +750,16 @@ def serialize_robot_trajectory(
         )
         if yellow_foot_f0 is not None:
             # ``_mesh_playback_z_lift`` already places the mesh sole on the
-            # overlay foot; do not re-normalise to z=0.
+            # overlay foot; do not re-normalise to ``z=0``.
             const_lift = float(lift0)
+        elif preserve_absolute_z:
+            # Trust the exported floating-base root in the retarget/terrain frame.
+            # Apply ankle→sole mesh correction when available; otherwise leave
+            # ``mesh_z_lift`` at zero so the sidecar heightfield stays aligned.
+            const_lift = float(lift0) if sole_depth_ref is not None else 0.0
         else:
-            # Exported robot trajectories carry an absolute floating-base root z.
-            # Shift the constant group lift so the lowest mesh vertex rests on z=0
-            # at the first played frame (scheme A + root-height correction).
+            # Flat robot CSV exports with no terrain: shift the constant group
+            # lift so the lowest mesh vertex rests on z=0 at the first frame.
             model.apply_configuration(cfg0)
             root_rot0 = _quat_xyzw_to_rotmat(root0[3:7])
             min_mesh_z0 = _scene_min_mesh_z(model.trimesh_scene(), root_rot0)

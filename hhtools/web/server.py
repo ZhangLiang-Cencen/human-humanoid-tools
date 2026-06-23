@@ -2374,16 +2374,9 @@ def _run_r2r_source_upload_job(
 
         job.progress = 0.72
         job.message = "正在生成机器人播放轨迹…"
-        ret_play = r2r.trajectory_to_retargeted_motion(src_model, traj, name=stem)
-        playback = serialize_robot_trajectory(src_model, ret_play)
-
-        job.progress = 0.88
-        job.message = "正在生成骨架预览…"
-        skel = _ground_skeleton_preview(serialize_motion_skeleton_preview(motion))
-
         scaled_scene = None
         if clip_ref.has_scene:
-            job.progress = 0.92
+            job.progress = 0.88
             job.message = "正在加载地形/物体…"
             from hhtools.web.r2r_scene import load_r2r_clip_scene
 
@@ -2394,6 +2387,19 @@ def _run_r2r_source_upload_job(
                 num_frames=int(traj.joint_q.shape[0]),
                 framerate=float(traj.framerate),
             )
+
+        job.progress = 0.9
+        job.message = "正在生成机器人播放轨迹…"
+        ret_play = r2r.trajectory_to_retargeted_motion(src_model, traj, name=stem)
+        playback = serialize_robot_trajectory(
+            src_model,
+            ret_play,
+            preserve_absolute_z=bool(scaled_scene and scaled_scene.get("terrain")),
+        )
+
+        job.progress = 0.95
+        job.message = "正在生成骨架预览…"
+        skel = _ground_skeleton_preview(serialize_motion_skeleton_preview(motion))
 
         token = uuid.uuid4().hex[:10]
         state.r2r_sources[token] = {
@@ -3231,9 +3237,6 @@ def _build_robot_export_playback(
     traj = r2r.load_source_trajectory(path, source_model=model)
     if cb is not None:
         cb(0.45, "生成机器人播放轨迹…")
-    ret_play = r2r.trajectory_to_retargeted_motion(model, traj, name=path.stem)
-    playback = serialize_robot_trajectory(model, ret_play)
-
     num_frames = int(traj.joint_q.shape[0])
     framerate = float(traj.framerate)
     prof = detect_r2r_profile(clip_dir)
@@ -3243,6 +3246,12 @@ def _build_robot_export_playback(
         robot_path=path,
         num_frames=num_frames,
         framerate=framerate,
+    )
+    ret_play = r2r.trajectory_to_retargeted_motion(model, traj, name=path.stem)
+    playback = serialize_robot_trajectory(
+        model,
+        ret_play,
+        preserve_absolute_z=bool(scaled_scene and scaled_scene.get("terrain")),
     )
 
     preview_token = uuid.uuid4().hex[:10]
