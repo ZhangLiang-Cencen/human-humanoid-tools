@@ -446,8 +446,30 @@ def write_retarget_export_bundle(
     return zip_path
 
 
-def zip_directory(src_dir: Path, zip_stem: str) -> Path:
-    """Zip ``src_dir`` contents to ``zip_stem``.zip`` next to it."""
+def zip_directory(
+    src_dir: Path,
+    zip_stem: str,
+    *,
+    compress: bool = False,
+) -> Path:
+    """Zip ``src_dir`` contents to ``zip_stem``.zip`` next to it.
+
+    Batch exports default to ``compress=False`` (``ZIP_STORED``): CSV/PKL are
+    already mostly unique floats; DEFLATE buys little and costs a lot on large
+    trees (43×3000-frame clips).
+    """
+    import zipfile
+
     src_dir = Path(src_dir)
-    archive = shutil.make_archive(str(src_dir.parent / zip_stem), "zip", root_dir=str(src_dir))
-    return Path(archive)
+    archive_path = src_dir.parent / f"{zip_stem}.zip"
+    if archive_path.exists():
+        archive_path.unlink()
+    compression = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
+    kwargs: dict = {"compression": compression}
+    if compress:
+        kwargs["compresslevel"] = 3
+    with zipfile.ZipFile(archive_path, "w", **kwargs) as zf:
+        for path in sorted(src_dir.rglob("*")):
+            if path.is_file():
+                zf.write(path, path.relative_to(src_dir).as_posix())
+    return archive_path

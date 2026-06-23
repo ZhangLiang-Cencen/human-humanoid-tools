@@ -603,6 +603,56 @@ def _lowest_ankle_z(model, ik_map: dict[str, Any], root_rot: np.ndarray) -> floa
     return min(ankle_zs) if ankle_zs else None
 
 
+def _lowest_ik_link_z(
+    model,
+    ik_map: dict[str, Any],
+    root_rot: np.ndarray,
+    slots: tuple[str, ...],
+) -> float | None:
+    """Lowest link-origin z among ``ik_map`` slots (root rotation only)."""
+    T_root = np.eye(4, dtype=np.float64)
+    T_root[:3, :3] = np.asarray(root_rot, dtype=np.float64)
+    zs: list[float] = []
+    for canonical in slots:
+        link = _resolve_ik_link(ik_map, canonical)
+        if not link:
+            continue
+        try:
+            T_link = np.asarray(model.urdf.get_transform(link), dtype=np.float64)
+        except Exception:
+            continue
+        zs.append(float((T_root @ T_link)[2, 3]))
+    return min(zs) if zs else None
+
+
+def _lowest_ground_contact_z(
+    model,
+    ik_map: dict[str, Any],
+    root_rot: np.ndarray,
+    *,
+    include_mesh: bool = True,
+) -> float | None:
+    """Lowest body contact height in the root frame (ankles, knees, mesh).
+
+    Post-IK foot clamp used to watch ankles only, which misses kneeling /
+    prone contact where knees or shins touch the floor while feet stay raised.
+    """
+    limb_z = _lowest_ik_link_z(
+        model,
+        ik_map,
+        root_rot,
+        ("left_ankle", "right_ankle", "left_knee", "right_knee"),
+    )
+    mesh_z: float | None = None
+    if include_mesh:
+        mesh_z = _scene_min_mesh_z(model.trimesh_scene(), root_rot)
+    if limb_z is None:
+        return mesh_z
+    if mesh_z is None:
+        return limb_z
+    return min(limb_z, mesh_z)
+
+
 def _sole_depth_reference(model, ik_map: dict[str, Any]) -> float | None:
     """Ankle→sole distance at the zero pose (metres, positive when sole is below ankle)."""
     model.apply_configuration(model.zero_configuration())

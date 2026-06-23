@@ -12,10 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from hhtools.core.grounding import (
-    human_source_floor_z_world,
-    preferred_floor_contact_bone_indices,
-)
+from hhtools.core.grounding import human_source_floor_z_world
 from hhtools.core.motion import Motion
 from hhtools.viewer.anatomy import (
     exclude_joint_from_compact_scaled_preview,
@@ -169,29 +166,10 @@ def _endpoint_overlay_z_correction(
 ) -> float:
     """Vertical shift for the yellow overlay after uniform scale.
 
-    Priority (per product spec):
-
-    1. **Foot + hand endpoints** — feet on ``z=0``; hands follow the same
-       uniform scale (no separate hand Z bias).
-    2. **COM / pelvis** — intentionally *not* used for a global Z shift;
-       soma-style pelvis ``root_z_offset`` must not pull feet underground.
-    3. Everything else inherits the above.
-
-    After :func:`human_source_floor_z_world` normalisation the foot plane is
-    already near ``z=0``; this snaps residual frame-0 drift (ankle hubs vs
-    global clip minimum, etc.) without re-introducing pelvis alignment.
+    :func:`human_source_floor_z_world` already subtracts the clip-wide lowest
+    joint, so the global minimum rests on ``z=0``; no extra foot-hub snap.
     """
-    _ = scaler  # kept for API stability; COM/pelvis no longer drives Z shift
-    pos0 = _scaled_uniform_positions_frame0(motion, ratio, frame=frame)
-    bone_names = motion.hierarchy.bone_names
-
-    foot_i = preferred_floor_contact_bone_indices(bone_names)
-    if foot_i.size < 2:
-        foot_i = _endpoint_bone_indices(bone_names, kind="foot")
-    if foot_i.size >= 1:
-        foot_z = float(pos0[foot_i, 2].min())
-        if abs(foot_z) > 1e-5:
-            return -foot_z
+    _ = (motion, scaler, ratio, frame)
     return 0.0
 
 

@@ -104,15 +104,20 @@ def save_robot_csv(
         meta.setdefault("num_dofs", str(len(robot.dof_names())))
 
     with target.open("w", newline="", encoding="utf-8") as fp:
-        writer = csv.writer(fp)
         if include_header:
             for key in sorted(meta):
                 fp.write(f"# {key}: {meta[key]}\n")
-            writer.writerow(header)
-        for frame in range(num_frames):
-            row = [f"{times[frame]:.6f}"]
-            row.extend(f"{v:.6f}" for v in joint_q[frame])
-            writer.writerow(row)
+            fp.write(",".join(header) + "\n")
+        body = np.column_stack(
+            [times.reshape(-1, 1), np.asarray(joint_q, dtype=np.float64)],
+        )
+        np.savetxt(
+            fp,
+            body,
+            delimiter=",",
+            fmt="%.6f",
+            comments="",
+        )
     return target
 
 

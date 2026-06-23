@@ -293,7 +293,7 @@
             </label>
           </div>
           <p class="hint" id="rt-foot-clamp-hint" style="margin-top:4px">
-            对应 <code>robot.yaml</code> 的 <code>foot_clamp_anti_penetration</code>。勾选为 <code>true</code>：脚穿地时 IK 会向上抬根；默认关闭（<code>false</code>）。翻滚/后空翻等建议保持关闭。
+            对应 <code>robot.yaml</code> 的 <code>foot_clamp_anti_penetration</code>。勾选后 IK 会把<b>脚踝、膝盖及 mesh 最低点</b>抬离地面（跪地/趴地也生效）；默认关闭。翻滚/后空翻建议保持关闭。
           </p>
           <p class="hint" id="rt-first-hint" style="margin-top:6px">
             <b>首次 Retarget 较慢：</b>新机器人第一次求解会编译 GPU/Warp IK 内核并捕获 CUDA 图（约 10–60 秒）。进度条可能短暂不动，属正常现象，请耐心等待；加载机器人后会在后台预热，同一机器人后续会快很多。
@@ -391,7 +391,8 @@
             <input class="search" id="batch-export-fps" type="number" min="1" step="1" style="flex:0 0 42%"
               placeholder="导出 FPS" title="留空 = 与 Retarget 相同" />
           </div>
-          <p class="hint" style="margin-top:4px">导出 FPS：仅对机器人轨迹插值写文件，不重新求解。</p>
+          <p class="hint" style="margin-top:4px">导出 FPS：仅对机器人轨迹插值写文件，不重新求解。大批量优先选 <b>PKL</b>（写盘更快）；CSV 批量打包使用无压缩 ZIP 以加速。
+          </p>
           <label class="row" style="margin-top:8px; gap:8px; align-items:center; cursor:pointer">
             <input type="checkbox" id="batch-csv-header" checked />
             <span class="hint" style="margin:0">CSV 含注释与列名表头</span>

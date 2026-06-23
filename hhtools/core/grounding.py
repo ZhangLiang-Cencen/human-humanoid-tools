@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 hhtools contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Foot-based floor detection for selected meshmimic captures.
+"""Foot-based floor detection and clip-wide skeleton grounding.
 
 The **split** vertical convention (foot floor for the skeleton, a separate
 ``z_offset`` for the terrain heightfield so low cells are not buried) is enabled
 for ``20260429_mocap`` and ``parc_ms`` meshmimic clips.  Interaction-mesh
-retarget always uses :func:`human_source_floor_z_world` for the skeleton floor;
-split rules only affect terrain ``z_offset`` when the heightfield minimum sits
-below the foot plane.
+retarget uses :func:`human_source_floor_z_world` for the skeleton floor (clip-wide
+minimum over all joints); split rules only affect terrain ``z_offset`` when the
+heightfield minimum sits below that plane.
 
 See :func:`use_split_terrain_grounding`.
 """
@@ -114,6 +114,17 @@ def preferred_floor_contact_bone_indices(
     return np.asarray(kept, dtype=np.int64)
 
 
+def clip_floor_z_in_positions(positions: NDArray) -> float:
+    """Minimum world Z over all joints in ``positions`` (``(F, J, 3)`` or ``(J, 3)``)."""
+
+    pos = np.asarray(positions, dtype=np.float32)
+    if pos.size == 0:
+        return 0.0
+    if pos.ndim == 2:
+        return float(pos[:, 2].min())
+    return float(pos[:, :, 2].min())
+
+
 def foot_floor_z_in_positions(
     positions: NDArray,
     bone_names: tuple[str, ...],
@@ -165,15 +176,13 @@ def use_split_terrain_grounding(motion: "Motion") -> bool:
 
 
 def human_source_floor_z_world(motion: "Motion") -> float:
-    """Minimum world Z for a foot-based floor, else minimum over all joints."""
+    """Minimum world Z over all joints across the full clip.
 
-    pos = np.asarray(motion.positions, dtype=np.float32)
-    if pos.size == 0:
-        return 0.0
-    foot_i = preferred_floor_contact_bone_indices(tuple(motion.hierarchy.bone_names))
-    if foot_i.size >= 2:
-        return float(pos[:, foot_i, 2].min())
-    return float(pos[:, :, 2].min())
+    Uses the clip-wide lowest point (toes, knees in kneeling, hands on floor,
+    etc.) so poses where feet leave the ground still normalize correctly.
+    """
+
+    return clip_floor_z_in_positions(np.asarray(motion.positions, dtype=np.float32))
 
 
 def terrain_heightfield_z_offset_world(motion: "Motion", z_human_floor_m: float) -> float:
@@ -204,6 +213,7 @@ def terrain_heightfield_z_offset_world(motion: "Motion", z_human_floor_m: float)
 
 
 __all__ = [
+    "clip_floor_z_in_positions",
     "foot_contact_bone_indices",
     "foot_floor_z_in_positions",
     "human_source_floor_z_world",

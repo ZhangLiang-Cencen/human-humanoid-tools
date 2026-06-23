@@ -1560,32 +1560,29 @@ def create_app(
                                     foot_clamp_anti_penetration
                                 ),
                             )
-                            for e, motion, entry, ret in exports:
-                                try:
-                                    subdir = _batch_export_subdir(e)
-                                    out_path = _write_export(
-                                        ret, model, motion, out_dir,
-                                        stem=(motion.name or entry.stem),
-                                        fps=export_fps, fmt=fmt, backend=backend,
-                                        subdir=subdir, csv_header=csv_header,
-                                        source_path=e.get("source_path"),
-                                    )
-                                    written.append(str(out_path.relative_to(out_dir)))
-                                except Exception as err:  # noqa: BLE001
-                                    failure_log = _record_batch_failure(
-                                        failure_log, state, job.id, out_name,
-                                        e, stage="export", reason=str(err),
-                                        reference=reference,
-                                        errors=errors, failures=failures,
-                                    )
-                                done_clips += 1
-                                _set_batch_job_progress(
-                                    job,
-                                    f"导出 {e.get('stem', '?')} · {done_clips}/{total}",
-                                    done_clips / max(1, total),
-                                    batch_t0,
-                                    clip_progress=1.0,
-                                )
+                            done_clips, failure_log = _batch_export_retargeted_chunk(
+                                exports,
+                                model=model,
+                                motion_out_dir=out_dir,
+                                export_fps=export_fps,
+                                fmt=fmt,
+                                backend=backend,
+                                csv_header=csv_header,
+                                base_prog=base_prog,
+                                span_prog=span_prog,
+                                job=job,
+                                batch_t0=batch_t0,
+                                done_clips=done_clips,
+                                total=total,
+                                written=written,
+                                failure_log=failure_log,
+                                state=state,
+                                job_id=job.id,
+                                out_name=out_name,
+                                reference=reference,
+                                errors=errors,
+                                failures=failures,
+                            )
                         except Exception as err:  # noqa: BLE001
                             for e, _, _ in loaded_chunk:
                                 failure_log = _record_batch_failure(
@@ -1607,11 +1604,12 @@ def create_app(
                 failure_log.finalize(job_id=job.id, out_name=out_name)
 
             _set_batch_job_progress(
-                job, "正在打包 ZIP…", 0.99, batch_t0, clip_progress=1.0,
+                job, "正在打包 ZIP…", _BATCH_ZIP_PROGRESS, batch_t0,
+                clip_progress=1.0,
             )
             from hhtools.web.export_bundle import zip_directory
 
-            zip_path = zip_directory(out_dir, out_name)
+            zip_path = zip_directory(out_dir, out_name, compress=False)
             gpu_note = (
                 "GPU-parallel Newton"
                 if backend != "interaction_mesh" and batch_size > 1
@@ -2149,9 +2147,156 @@ def _format_duration(seconds: float) -> str:
     return f"{hours} 时 {minutes} 分"
 
 
+# GPU batch: IK frame progress uses only part of each chunk's budget; export + zip
+# follow.  Previously IK reached 100% of the chunk span before CSV/ZIP I/O, so
+# ETA showed "1 s left" while dozens of large exports still ran.
+_BATCH_CHUNK_IK_FRAC = 0.82
+_BATCH_CHUNK_EXPORT_FRAC = 0.18
+_BATCH_ZIP_PROGRESS = 0.985
+_BATCH_EXPORT_WORKERS = 8
+
+
+def _batch_chunk_ik_progress(
+    progress_base: float, progress_span: float, frame_frac: float,
+) -> tuple[float, float]:
+    ik_clip = 0.05 + 0.95 * min(1.0, max(0.0, frame_frac))
+    total = progress_base + progress_span * ik_clip * _BATCH_CHUNK_IK_FRAC
+    return total, ik_clip * _BATCH_CHUNK_IK_FRAC
+
+
+def _batch_chunk_export_progress(
+    progress_base: float, progress_span: float, export_frac: float,
+) -> tuple[float, float]:
+    export_frac = min(1.0, max(0.0, export_frac))
+    total = progress_base + progress_span * (
+        _BATCH_CHUNK_IK_FRAC + _BATCH_CHUNK_EXPORT_FRAC * export_frac
+    )
+    clip_p = _BATCH_CHUNK_IK_FRAC + _BATCH_CHUNK_EXPORT_FRAC * export_frac
+    return total, clip_p
+
+
+def _batch_export_retargeted_chunk(
+    exports: list[tuple[dict, object, object, object]],
+    *,
+    model,
+    motion_out_dir,
+    export_fps,
+    fmt: str,
+    backend: str,
+    csv_header: bool,
+    base_prog: float,
+    span_prog: float,
+    job,
+    batch_t0: float,
+    done_clips: int,
+    total: int,
+    written: list[str],
+    failure_log,
+    state,
+    job_id: str,
+    out_name: str,
+    reference: str,
+    errors: list[str],
+    failures: list[dict],
+):
+    """Write retarget results for one GPU chunk (parallel CSV/PKL when >1 clip)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    n_export = len(exports)
+    if n_export == 0:
+        return done_clips, failure_log
+
+    workers = 1 if n_export <= 1 else min(_BATCH_EXPORT_WORKERS, n_export)
+    prog_lock = threading.Lock()
+    export_done = 0
+
+    def _write_one(
+        export_i: int,
+        e: dict,
+        motion: object,
+        entry: object,
+        ret: object,
+    ) -> tuple[int, dict, str | None, str | None]:
+        try:
+            subdir = _batch_export_subdir(e)
+            out_path = _write_export(
+                ret, model, motion, motion_out_dir,
+                stem=(motion.name or entry.stem),
+                fps=export_fps, fmt=fmt, backend=backend,
+                subdir=subdir, csv_header=csv_header,
+                source_path=e.get("source_path"),
+            )
+            return export_i, e, str(out_path.relative_to(motion_out_dir)), None
+        except Exception as err:  # noqa: BLE001
+            return export_i, e, None, str(err)
+
+    def _record_success(rel_path: str) -> None:
+        nonlocal export_done, done_clips
+        with prog_lock:
+            written.append(rel_path)
+            export_done += 1
+            done_clips += 1
+            export_frac = export_done / n_export
+            prog, clip_p = _batch_chunk_export_progress(
+                base_prog, span_prog, export_frac,
+            )
+            _set_batch_job_progress(
+                job,
+                f"导出 · {done_clips}/{total}",
+                prog,
+                batch_t0,
+                clip_progress=clip_p,
+            )
+
+    def _record_failure(e: dict, reason: str) -> None:
+        nonlocal export_done, done_clips, failure_log
+        with prog_lock:
+            failure_log = _record_batch_failure(
+                failure_log, state, job_id, out_name,
+                e, stage="export", reason=reason,
+                reference=reference,
+                errors=errors, failures=failures,
+            )
+            export_done += 1
+            done_clips += 1
+            export_frac = export_done / n_export
+            prog, clip_p = _batch_chunk_export_progress(
+                base_prog, span_prog, export_frac,
+            )
+            _set_batch_job_progress(
+                job,
+                f"导出失败 {e.get('stem', '?')} · {done_clips}/{total}",
+                prog,
+                batch_t0,
+                clip_progress=clip_p,
+            )
+
+    if workers == 1:
+        for export_i, (e, motion, entry, ret) in enumerate(exports):
+            _, _, rel, err = _write_one(export_i, e, motion, entry, ret)
+            if err is not None:
+                _record_failure(e, err)
+            else:
+                _record_success(rel)
+        return done_clips, failure_log
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [
+            pool.submit(_write_one, i, e, motion, entry, ret)
+            for i, (e, motion, entry, ret) in enumerate(exports)
+        ]
+        for fut in as_completed(futs):
+            _, e, rel, err = fut.result()
+            if err is not None:
+                _record_failure(e, err)
+            else:
+                _record_success(rel)
+    return done_clips, failure_log
+
+
 def _batch_eta_suffix(progress: float, t0: float) -> str:
     """Linear ETA from elapsed time and fractional progress."""
-    if progress <= 0.02 or progress >= 0.995:
+    if progress <= 0.02 or progress >= 0.88:
         return ""
     elapsed = time.monotonic() - t0
     if elapsed <= 0:
@@ -2445,20 +2590,15 @@ def _run_r2r_source_upload_job(
 
 
 def _ground_skeleton_preview(payload: dict) -> dict:
-    """Shift skeleton positions so frame-0 foot contact rests on z=0."""
+    """Shift skeleton positions so the clip-wide lowest joint rests on z=0."""
     import numpy as np
 
-    from hhtools.core.grounding import preferred_floor_contact_bone_indices
+    from hhtools.core.grounding import clip_floor_z_in_positions
 
     positions = np.asarray(payload.get("positions") or [], dtype=np.float32)
     if positions.size == 0:
         return payload
-    names = tuple(payload.get("bone_names") or ())
-    foot_i = preferred_floor_contact_bone_indices(names)
-    if foot_i.size >= 1:
-        z_ref = float(positions[0, foot_i, 2].min())
-    else:
-        z_ref = float(positions[0, :, 2].min())
+    z_ref = float(clip_floor_z_in_positions(positions))
     positions = positions.copy()
     positions[:, :, 2] -= np.float32(z_ref)
     out = dict(payload)
@@ -3075,16 +3215,18 @@ def _retarget_newton_batch_chunk(
         if job is None:
             return
         frac = done / max(1, total)
-        clip_frac = 0.08 + 0.92 * frac
+        total_p, clip_p = _batch_chunk_ik_progress(
+            progress_base, progress_span, frac,
+        )
         _set_batch_job_progress(
             job,
             (
                 f"并行 IK {chunk_label} · 参考 {reference} · "
                 f"帧 {done}/{total}（本批最长 clip）"
             ),
-            progress_base + progress_span * clip_frac,
+            total_p,
             batch_t0,
-            clip_progress=clip_frac,
+            clip_progress=clip_p,
         )
 
     try:

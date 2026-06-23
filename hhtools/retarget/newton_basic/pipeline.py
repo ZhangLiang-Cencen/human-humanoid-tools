@@ -1454,11 +1454,15 @@ class NewtonBasicPipeline:
     def _clamp_solved_foot_heights(self, joint_q: NDArray) -> NDArray:
         """Post-IK safety clamp mirroring soma ``_clamp_foot_positions``.
 
-        Immediately lifts the floating base when solved ankle links sit below
-        the ground plane.  Anti-floating corrections use an uprightness blend
-        and per-frame rate limit so cartwheels are not snapped downward.
+        Lifts the floating base when solved ankles, knees, or mesh geometry sit
+        below the ground plane.  Anti-floating still uses ankles only so kneeling
+        poses are not pulled downward when feet leave the floor.
         """
-        from hhtools.web.serialize import _lowest_ankle_z, _quat_xyzw_to_rotmat
+        from hhtools.web.serialize import (
+            _lowest_ankle_z,
+            _lowest_ground_contact_z,
+            _quat_xyzw_to_rotmat,
+        )
 
         ik_map = dict(self.robot.preset.ik_map) if self.robot.preset.ik_map else {}
         if not ik_map:
@@ -1484,7 +1488,7 @@ class NewtonBasicPipeline:
         rest_ankle = _lowest_ankle_z(self.robot, ik_map, root_rot0)
         rest_foot_z = float(rest_ankle) if rest_ankle is not None else 0.0
 
-        # Signed root-Z correction carried across frames (positive lifts the
+        # Signed root-Z correction carried across frames
         # base up to clear ground penetration, negative pushes it down to kill
         # float).  Both directions are rate-limited so neither can teleport the
         # whole body in a single frame: the unbounded penetration lift was the
@@ -1500,25 +1504,34 @@ class NewtonBasicPipeline:
                 for i in range(n_dof)
             }
             self.robot.apply_configuration(cfg)
-            ankle_z = _lowest_ankle_z(
-                self.robot, ik_map, _quat_xyzw_to_rotmat(out[f, 3:7]),
+            root_rot = _quat_xyzw_to_rotmat(out[f, 3:7])
+            ankle_z = _lowest_ankle_z(self.robot, ik_map, root_rot)
+            contact_z = _lowest_ground_contact_z(
+                self.robot, ik_map, root_rot, include_mesh=True,
             )
-            if ankle_z is None:
+            if contact_z is None and ankle_z is None:
                 continue
             root_z = float(out[f, 2])
-            world_ankle_z = root_z + float(ankle_z)
+            if contact_z is not None:
+                world_contact_z = root_z + float(contact_z)
+            else:
+                world_contact_z = root_z + float(ankle_z)
 
-            if world_ankle_z < _MIN_ANKLE_Z and self.config.foot_clamp_anti_penetration:
+            if world_contact_z < _MIN_ANKLE_Z and self.config.foot_clamp_anti_penetration:
                 # Ground penetration: desired *upward* lift (>0).
-                desired = _MIN_ANKLE_Z - world_ankle_z
+                desired = _MIN_ANKLE_Z - world_contact_z
             elif (
                 self.config.foot_clamp_anti_float
+                and ankle_z is not None
                 and float(ankle_z) > rest_foot_z + _FLOAT_TOL
             ):
                 # Floating foot: desired *downward* correction (<0).
                 uprightness = max(
                     0.0,
-                    min(1.0, (root_z - world_ankle_z) / _UPRIGHT_BLEND_RANGE),
+                    min(
+                        1.0,
+                        (root_z - (root_z + float(ankle_z))) / _UPRIGHT_BLEND_RANGE,
+                    ),
                 )
                 desired = -min(
                     (float(ankle_z) - rest_foot_z - _FLOAT_TOL) * uprightness,
