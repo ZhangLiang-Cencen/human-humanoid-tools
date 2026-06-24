@@ -52,12 +52,31 @@ def _mesh_bbox_extents(mesh_path: Path) -> np.ndarray:
         return np.zeros(3, dtype=np.float32)
 
 
+def _row_looks_numeric(cells: list[str]) -> bool:
+    if len(cells) < 8:
+        return False
+    try:
+        float(cells[0])
+        float(cells[7])
+        return True
+    except ValueError:
+        return False
+
+
+def _looks_like_object_header(cells: list[str]) -> bool:
+    if not cells:
+        return False
+    first = cells[0].strip().lower()
+    if first == "time":
+        return True
+    return any(c.strip().lower() in ("pos_x", "quat_x", "quat_w") for c in cells)
+
+
 def _load_object_track_csv(path: Path) -> dict[str, Any] | None:
     """Parse ``object_<i>_<name>.csv`` (robot-frame pose; geometry from mesh).
 
-    ``ext_*`` columns are optional — older exports recorded a cuboid extent, but
-    current exports omit it and rely on the sidecar ``.obj`` mesh.  Columns are
-    matched by header name so both layouts load.
+    Supports both headered exports and headerless ``time,pos,quat`` rows (the
+    default when ``csv_header=0``).  ``ext_*`` columns are optional.
     """
     meta = _parse_comment_meta(path)
     header: list[str] | None = None
@@ -70,16 +89,23 @@ def _load_object_track_csv(path: Path) -> dict[str, Any] | None:
             if raw[0].startswith("#"):
                 continue
             if header is None:
+                if _looks_like_object_header(raw):
+                    header = [c.strip() for c in raw]
+                    continue
+                if _row_looks_numeric(raw):
+                    header = []
+                    rows.append(list(raw))
+                    continue
                 header = [c.strip() for c in raw]
                 continue
             rows.append(list(raw))
     if header is None or not rows:
         return None
     arr = np.asarray(rows, dtype=np.float64)
-    col = {name: i for i, name in enumerate(header)}
+    col = {name: i for i, name in enumerate(header)} if header else {}
 
     def _cols(names: tuple[str, ...], fallback: tuple[int, ...]) -> list[int]:
-        if all(n in col for n in names):
+        if header and all(n in col for n in names):
             return [col[n] for n in names]
         return list(fallback)
 
@@ -111,6 +137,8 @@ def _load_object_track_csv(path: Path) -> dict[str, Any] | None:
         extents = np.zeros(3, dtype=np.float32)
 
     name = meta.get("object") or path.stem
+    if name.startswith("object_") and name.count("_") >= 2:
+        name = name.split("_", 2)[2]
     return {
         "name": str(name),
         "positions": positions,

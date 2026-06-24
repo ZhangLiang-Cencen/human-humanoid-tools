@@ -51,6 +51,29 @@ def r2r_scene_scale_ratio(
     )
 
 
+def resolve_r2r_source_clip_dir(entry: dict[str, Any]) -> Path | None:
+    """Return the folder that holds the source robot traj + scene sidecars."""
+    clip_dir = str(entry.get("clip_dir") or "").strip()
+    if clip_dir:
+        path = Path(clip_dir).expanduser().resolve()
+        if path.is_dir():
+            return path
+
+    source_path = str(entry.get("source_path") or "").strip()
+    if source_path:
+        path = Path(source_path).expanduser().resolve().parent
+        if path.is_dir():
+            return path
+
+    upload_drop = str(entry.get("upload_drop") or "").strip()
+    sequence_id = str(entry.get("sequence_id") or "").strip()
+    if upload_drop and sequence_id:
+        path = (Path(upload_drop).expanduser().resolve() / sequence_id).parent
+        if path.is_dir():
+            return path
+    return None
+
+
 def clip_has_export_scene(clip_dir: Path, *, stem: str, profile: str = "") -> bool:
     clip_dir = Path(clip_dir)
     prof = (profile or "").strip().lower()
@@ -103,7 +126,10 @@ def _export_scaled_object_mesh(src: Path, dst: Path, ratio: float) -> bool:
         if verts.size == 0 or faces.size == 0:
             return False
         centroid = verts.mean(axis=0)
-        verts = (verts - centroid) * float(ratio)
+        if float(np.max(np.abs(centroid))) > 1e-2:
+            verts = (verts - centroid) * float(ratio)
+        else:
+            verts = verts * float(ratio)
         mesh = trimesh.Trimesh(vertices=verts.astype(np.float32), faces=faces, process=False)
         dst.parent.mkdir(parents=True, exist_ok=True)
         mesh.export(str(dst))
@@ -119,10 +145,11 @@ def _write_r2r_object_tracks(
     *,
     ratio: float,
     sample_rate: float,
+    num_frames: int,
     fmt: str,
     csv_header: bool,
 ) -> list[str]:
-    from hhtools.web.r2r_scene import _load_object_track_csv
+    from hhtools.web.r2r_scene import _align_track_frames, _load_object_track_csv
 
     written: list[str] = []
     for i, src_csv in enumerate(sorted(source_clip_dir.glob("object_*.csv"))):
@@ -130,8 +157,9 @@ def _write_r2r_object_tracks(
         if ob is None:
             continue
         positions = np.asarray(ob["positions"], dtype=np.float32) * np.float32(ratio)
-        extents = np.asarray(ob["extents"], dtype=np.float32) * np.float32(ratio)
         quat_xyzw = np.asarray(ob["quaternions"], dtype=np.float32)
+        positions, quat_xyzw = _align_track_frames(positions, quat_xyzw, int(num_frames))
+        extents = np.asarray(ob["extents"], dtype=np.float32) * np.float32(ratio)
         quat_wxyz = np.empty_like(quat_xyzw)
         quat_wxyz[..., 0] = quat_xyzw[..., 3]
         quat_wxyz[..., 1:] = quat_xyzw[..., :3]
@@ -207,7 +235,7 @@ def write_r2r_export_bundle(
     fmt = (fmt or "csv").lower()
 
     source_path = entry.get("source_path")
-    source_clip_dir = Path(source_path).resolve().parent if source_path else out_root
+    source_clip_dir = resolve_r2r_source_clip_dir(entry) or out_root
     profile = str(entry.get("upload_profile") or "")
     has_scene = bool(entry.get("has_scene")) or clip_has_export_scene(
         source_clip_dir, stem=stem, profile=profile,
@@ -261,6 +289,7 @@ def write_r2r_export_bundle(
             source_clip_dir,
             ratio=ratio,
             sample_rate=sample_rate,
+            num_frames=int(joint_q.shape[0]),
             fmt=fmt,
             csv_header=csv_header,
         )
@@ -270,6 +299,9 @@ def write_r2r_export_bundle(
 
     if not has_scene and fmt == "csv":
         return clip_dir / f"{stem}.csv"
+
+    if not has_scene:
+        return clip_dir / (f"{stem}.pkl" if fmt == "pkl" else f"{stem}.csv")
 
     archive = shutil.make_archive(str(out_root / stem), "zip", root_dir=str(clip_dir))
     shutil.rmtree(clip_dir, ignore_errors=True)

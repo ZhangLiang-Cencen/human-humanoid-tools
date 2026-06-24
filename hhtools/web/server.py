@@ -1912,39 +1912,46 @@ def create_app(
                 tgt, ret, scaled_preview=scaled, ground_follow=False,
             )
             scaled = _align_r2r_scaled_preview_to_ground(tgt, ret, scaled, traj)
+            from hhtools.web.r2r_export_bundle import clip_has_export_scene
             from hhtools.web.r2r_scene import compute_r2r_target_scaled_scene
 
-            src_scene = rec.get("scaled_scene")
+            stem = rec.get("stem") or "r2r"
+            clip_dir_path = Path(rec.get("clip_dir") or Path(rec["source_path"]).parent)
+            scene_prof = str(rec.get("upload_profile") or "mimic")
+            src_has_scene = bool(rec.get("has_scene")) or clip_has_export_scene(
+                clip_dir_path, stem=stem, profile=scene_prof,
+            )
             tgt_scene = None
-            if src_scene and rec.get("clip_dir") and rec.get("source_path"):
+            if src_has_scene and rec.get("clip_dir") and rec.get("source_path"):
                 tgt_scene = compute_r2r_target_scaled_scene(
                     src,
                     tgt,
                     motion,
                     calib,
                     clip_dir=Path(rec["clip_dir"]),
-                    profile=str(rec.get("upload_profile") or "mimic"),
+                    profile=scene_prof,
                     robot_path=Path(rec["source_path"]),
                     num_frames=int(ret.num_frames),
                     framerate=float(ret.sample_rate),
                 )
             export_token = uuid.uuid4().hex[:10]
-            has_scene = bool(tgt_scene)
+            has_scene = src_has_scene
             state.motions[f"export::{export_token}"] = {
                 "retargeted": ret,
                 "robot": target,
                 "source_motion": motion,
                 "backend": backend,
-                "stem": rec.get("stem") or "r2r",
+                "stem": stem,
                 "has_scene": has_scene,
                 "source_path": rec.get("source_path"),
                 "r2r": True,
                 "source_robot": source,
                 "r2r_entry": {
                     "source_path": rec.get("source_path"),
-                    "stem": rec.get("stem") or "r2r",
+                    "clip_dir": rec.get("clip_dir"),
+                    "stem": stem,
                     "has_scene": has_scene,
-                    "upload_profile": rec.get("upload_profile") or "",
+                    "upload_profile": scene_prof,
                 },
             }
             job.result = {
@@ -2476,6 +2483,7 @@ def _run_r2r_source_upload_job(
         enumerate_r2r_clips,
         validate_r2r_upload,
     )
+    from hhtools.web.r2r_export_bundle import clip_has_export_scene
     from hhtools.web.serialize import (
         serialize_motion_skeleton_preview,
         serialize_robot_trajectory,
@@ -2525,7 +2533,10 @@ def _run_r2r_source_upload_job(
         job.progress = 0.72
         job.message = "正在生成机器人播放轨迹…"
         scaled_scene = None
-        if clip_ref.has_scene:
+        src_has_scene = clip_ref.has_scene or clip_has_export_scene(
+            clip_dir, stem=stem, profile=scene_prof,
+        )
+        if src_has_scene:
             job.progress = 0.88
             job.message = "正在加载地形/物体…"
             from hhtools.web.r2r_scene import load_r2r_clip_scene
@@ -2560,7 +2571,7 @@ def _run_r2r_source_upload_job(
             "stem": stem,
             "source_path": str(picked),
             "clip_dir": str(clip_dir),
-            "has_scene": bool(scaled_scene),
+            "has_scene": bool(src_has_scene),
             "upload_profile": scene_prof,
             "scaled_scene": scaled_scene,
         }
@@ -2573,11 +2584,11 @@ def _run_r2r_source_upload_job(
             "trajectory": playback,
             "skeleton_preview": skel,
             "scaled_scene": scaled_scene,
-            "has_scene": bool(scaled_scene),
+            "has_scene": bool(src_has_scene),
             "upload_profile": scene_prof,
             "name": stem,
             "suggested_backend": r2r.suggested_r2r_backend(
-                scene_prof, has_scene=bool(scaled_scene),
+                scene_prof, has_scene=bool(src_has_scene),
             ),
         }
         job.status = "done"
@@ -2631,6 +2642,7 @@ def _r2r_entry_from_upload(drop_dir: Path, ref) -> dict:
         "folder_label": folder_by_profile.get(prof, "r2r"),
         "sequence_id": sequence_id,
         "source_path": str(picked),
+        "clip_dir": str(picked.parent),
         "stem": stem,
         "origin": "upload",
         "export_subdir": export_subdir_for_r2r_clip(drop_dir, picked),
@@ -3697,19 +3709,22 @@ def _write_r2r_export(
     if subdir is not None and path.suffix == ".zip":
         import shutil
 
-        source_path = entry.get("source_path")
+        from hhtools.web.r2r_export_bundle import (
+            clip_has_export_scene,
+            resolve_r2r_source_clip_dir,
+        )
+
+        source_clip_dir = resolve_r2r_source_clip_dir(entry)
         profile = str(entry.get("upload_profile") or "")
         has_scene = bool(entry.get("has_scene")) or (
             clip_has_export_scene(
-                Path(source_path).resolve().parent,
-                stem=stem,
-                profile=profile,
+                source_clip_dir, stem=stem, profile=profile,
             )
-            if source_path
+            if source_clip_dir is not None
             else False
         )
         clip_dir = resolve_clip_export_dir(
-            out_dir, stem, source_path, has_scene=has_scene,
+            out_dir, stem, entry.get("source_path"), has_scene=has_scene,
         )
         clip_dir.mkdir(parents=True, exist_ok=True)
         shutil.unpack_archive(str(path), str(clip_dir))

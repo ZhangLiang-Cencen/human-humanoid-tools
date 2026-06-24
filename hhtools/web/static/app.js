@@ -4905,6 +4905,7 @@ async function r2rRunRetarget() {
     r2rLoadTgtScene(j.result.scaled_scene, r2r.sourceToken, tgtDur);
     document.getElementById("r2r-tg-tgt-robot").disabled = false;
     r2r.exportToken = j.result.export_token;
+    r2r.exportHasScene = !!j.result.has_scene;
     r2r.resultStem = j.result.stem || r2r.sourceStem || "r2r";
     r2rVis.tgtRobot = true;
     r2rVis.tgtSkel = !!j.result.scaled_preview;
@@ -4918,6 +4919,8 @@ async function r2rRunRetarget() {
       `完成：${j.result.num_frames} 帧 @ ${(j.result.source_fps || 30).toFixed(1)} fps`;
     document.getElementById("r2r-export-card").style.display = "block";
     document.getElementById("r2r-export-fps").value = "";
+    const r2rBundleHint = document.getElementById("r2r-export-bundle-hint");
+    if (r2rBundleHint) r2rBundleHint.style.display = j.result.has_scene ? "block" : "none";
     toast("R2R Retarget 完成，正在播放目标机器人");
   } catch (e) {
     status.textContent = "";
@@ -5064,7 +5067,9 @@ function r2rInit() {
     if (fps && fps > 0) url += `&fps=${fps}`;
     if (!document.getElementById("r2r-csv-header").checked) url += "&csv_header=0";
     const stem = r2r.resultStem || "r2r";
-    const name = fmt === "pkl" ? `${stem}.pkl` : `${stem}.csv`;
+    const name = r2r.exportHasScene || fmt === "pkl"
+      ? `${stem}_export.zip`
+      : (fmt === "pkl" ? `${stem}.pkl` : `${stem}.csv`);
     try {
       await triggerBrowserDownload(url, name);
       toast("已开始下载（保存到浏览器默认下载目录）");
