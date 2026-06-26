@@ -156,16 +156,16 @@ retarget:
   foot_clamp_anti_penetration: false
   joint_scale_multipliers:
     hips: 1.0
-    chest: 0.2256
-    left_shoulder: 0.7483
-    left_elbow: 0.8164
-    left_wrist: 0.8489
-    right_shoulder: 0.7482
-    right_elbow: 0.8164
-    right_wrist: 0.8489
-    left_hip: 1.7347
-    left_knee: 1.0084
-    left_ankle: 0.9056
-    right_hip: 1.7347
-    right_knee: 1.0084
-    right_ankle: 0.9056
+    chest: 0.1378
+    left_shoulder: 0.6281
+    left_elbow: 0.6817
+    left_wrist: 0.7146
+    right_shoulder: 0.6281
+    right_elbow: 0.6817
+    right_wrist: 0.7146
+    left_hip: 1.5763
+    left_knee: 0.9695
+    left_ankle: 0.8907
+    right_hip: 1.5763
+    right_knee: 0.9689
+    right_ankle: 0.8904

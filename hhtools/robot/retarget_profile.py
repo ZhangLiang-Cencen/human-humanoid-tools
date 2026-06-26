@@ -31,6 +31,7 @@ _DEFAULT_HUMAN_HEIGHT_BY_REFERENCE: dict[str, float] = {
     "gvhmr": 1.65,
     "soma_bvh": 1.65,
     "lafan_bvh": 1.65,
+    "mocap_bvh": 1.65,
     "xsens_mocap": 1.65,
     "glb": 1.65,
 }
@@ -63,6 +64,43 @@ _REFERENCE_FEET_DEFAULTS: dict[str, dict[str, Any]] = {
             "body_ground_snap_on_penetration": True,
             "hand_ground_contact_z": 0.02,
             "chest_name": "Spine2",
+            "arm_chains": [
+                {
+                    "shoulder": "LeftArm",
+                    "chain": ["LeftForeArm", "LeftHand"],
+                },
+                {
+                    "shoulder": "RightArm",
+                    "chain": ["RightForeArm", "RightHand"],
+                },
+            ],
+        },
+        "ground_collision_weight": 10.0,
+    },
+    "mocap_bvh": {
+        "apply_feet_stabilizer": True,
+        "feet_stabilizer": {
+            "ground_contact_z": 0.045,
+            "foot_planting_velocity_threshold": 0.005,
+            "foot_planting_height_margin": 0.02,
+            "min_lateral_separation": 0.0,
+            "left_foot_name": "LeftFoot",
+            "right_foot_name": "RightFoot",
+            "left_toe_name": "LeftToeBase",
+            "right_toe_name": "RightToeBase",
+            "hips_name": "Hips",
+            "enable_body_ground_clearance": True,
+            "body_ground_clearance": 0.025,
+            "body_ground_probe_joints": [
+                "Head", "Neck", "Spine3",
+                "LeftLeg", "RightLeg",
+                "LeftForeArm", "RightForeArm",
+                "LeftHand", "RightHand",
+            ],
+            "body_ground_lift_max_rate": 0.015,
+            "body_ground_snap_on_penetration": True,
+            "hand_ground_contact_z": 0.02,
+            "chest_name": "Spine3",
             "arm_chains": [
                 {
                     "shoulder": "LeftArm",
@@ -192,6 +230,7 @@ def _yaml_active_scale_edits(
     robot_model: "URDFRobotModel | None" = None,
     *,
     calibration: "RobotRetargetCalibration | None" = None,
+    motion: "Motion | None" = None,
 ) -> tuple[dict[str, float], dict[str, float]]:
     """Return ``(active yaml edits, calibration / URDF baselines)``."""
 
@@ -205,12 +244,23 @@ def _yaml_active_scale_edits(
     )
 
     if calibration is not None and robot_model is not None:
-        from hhtools.retarget.calibration.calibration import derive_calibration_params
+        from hhtools.retarget.calibration.calibration import (
+            derive_calibration_params,
+            normalize_calibration_reference,
+        )
 
-        baselines = {
-            str(k): float(v)
-            for k, v in derive_calibration_params(calibration, robot_model).scales.items()
-        }
+        ref = normalize_calibration_reference(str(calibration.reference))
+        if ref == "glb" and motion is None:
+            baselines, _ = scale_context_for_preset(preset, robot_model)
+        else:
+            baselines = {
+                str(k): float(v)
+                for k, v in derive_calibration_params(
+                    calibration,
+                    robot_model,
+                    reference_motion=motion,
+                ).scales.items()
+            }
     else:
         baselines, _ = scale_context_for_preset(preset, robot_model)
     zero_pose: dict[str, float] = {}
@@ -282,11 +332,12 @@ def _active_joint_scale_overrides_for_model(
     robot_model: "URDFRobotModel | None" = None,
     *,
     calibration: "RobotRetargetCalibration | None" = None,
+    motion: "Motion | None" = None,
 ) -> dict[str, float]:
     """Yaml scale tweaks that differ from calibration / URDF baseline."""
 
     active, _ = _yaml_active_scale_edits(
-        preset, robot_model, calibration=calibration,
+        preset, robot_model, calibration=calibration, motion=motion,
     )
     return dict(active)
 
@@ -670,7 +721,7 @@ def build_scaler_config_for_robot(
     from hhtools.retarget.calibration import build_scaler_config_from_calibration
 
     overrides = _active_joint_scale_overrides_for_model(
-        model.preset, robot_model=model, calibration=calibration,
+        model.preset, robot_model=model, calibration=calibration, motion=motion,
     )
     return build_scaler_config_from_calibration(
         calibration,

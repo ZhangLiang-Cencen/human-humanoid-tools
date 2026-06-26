@@ -8,12 +8,13 @@ from pathlib import Path
 
 from hhtools.retarget.newton_basic.human_aliases import (
     is_mixamo_cmu_like,
+    is_mocap_spine3_bvh_like,
     is_soma_bvh_like,
     is_xsens_mocap_like,
 )
 from hhtools.viewer.library import _DIR_TO_ADAPTER, _normalise_dirname
 
-_BVH_DATASET_HINTS = frozenset({"soma", "lafan", "xsens_mocap"})
+_BVH_DATASET_HINTS = frozenset({"soma", "lafan", "mocap", "xsens_mocap"})
 
 
 def read_bvh_joint_names(path: str | Path) -> tuple[str, ...]:
@@ -50,16 +51,19 @@ def infer_bvh_dataset_from_joints(
     *,
     path_hint: str | None = None,
 ) -> str | None:
-    """Return ``'soma'``, ``'lafan'``, or ``'xsens_mocap'`` from bone names."""
+    """Return ``'soma'``, ``'lafan'``, ``'mocap'``, or ``'xsens_mocap'`` from bone names."""
     names = tuple(joint_names)
     soma = is_soma_bvh_like(names)
     lafan = is_mixamo_cmu_like(names)
+    mocap = is_mocap_spine3_bvh_like(names)
     xsens = is_xsens_mocap_like(names)
-    if xsens and not soma and not lafan:
+    if xsens and not soma and not lafan and not mocap:
         return "xsens_mocap"
-    if soma and not lafan:
+    if mocap and not soma:
+        return "mocap"
+    if soma and not lafan and not mocap:
         return "soma"
-    if lafan and not soma:
+    if lafan and not soma and not mocap:
         return "lafan"
     if soma and lafan:
         return "soma" if "LeftUpLeg" not in names else "lafan"

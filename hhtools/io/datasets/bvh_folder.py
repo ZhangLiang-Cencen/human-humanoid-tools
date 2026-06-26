@@ -43,6 +43,12 @@ class LafanAdapter(_BvhFolderAdapter):
 
 
 @register_dataset
+class MocapAdapter(_BvhFolderAdapter):
+    name = "mocap"
+    display_name = "MOCAP BVH (Spine3 chest)"
+
+
+@register_dataset
 class SomaAdapter(_BvhFolderAdapter):
     name = "soma"
     display_name = "SOMA Retargeter test clips"
@@ -54,4 +60,4 @@ class XsensMocapAdapter(_BvhFolderAdapter):
     display_name = "Xsens MVN / biomechanics BVH"
 
 
-__all__ = ["LafanAdapter", "SomaAdapter", "XsensMocapAdapter"]
+__all__ = ["LafanAdapter", "MocapAdapter", "SomaAdapter", "XsensMocapAdapter"]

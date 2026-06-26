@@ -60,6 +60,16 @@ PARC_MS_BONE_NAMES: tuple[str, ...] = (
 # Parent of each body in :data:`PARC_MS_BONE_NAMES` (``-1`` = root).
 _PARC_MS_PARENTS: tuple[int, ...] = (-1, 0, 1, 1, 3, 4, 1, 6, 7, 0, 9, 10, 0, 12, 13)
 
+# Vertical offset (metres) from PARC's ``*_foot`` body origin (the **ankle**
+# joint) down to the sole contact surface.  PARC authors ``terrain_data`` so the
+# foot *geom bottom* rests on the heightfield, which leaves the foot **joint**
+# this constant above the terrain whenever a foot is planted.  Measured as a
+# clean constant (~0.0489–0.0502 m) across every dec_release clip and mirrored by
+# ``NewtonBasicPipeline._clamp_solved_foot_heights``'s ``_FOOT_COLLISION_OFFSET``.
+# The viewer uses it to lift parc_ms terrain back up to the foot joints so the
+# yellow skeleton foot, the robot mesh sole, and the terrain surface coincide.
+PARC_MS_FOOT_CONTACT_OFFSET_M: float = 0.05
+
 # ``pos`` attribute of each ``<body>`` in humanoid.xml — the rest bone offset in
 # the parent's local frame (metres).  ``local_rotation`` is identity for every
 # body (humanoid.xml declares no per-body ``quat``).
@@ -180,6 +190,7 @@ def resolve_parc_ms_reference_npz() -> Path:
 
 __all__ = [
     "PARC_MS_BONE_NAMES",
+    "PARC_MS_FOOT_CONTACT_OFFSET_M",
     "build_parc_ms_reference_motion",
     "build_parc_ms_skeleton_bundle_from_tpose",
     "default_parc_ms_skeleton_bundle",

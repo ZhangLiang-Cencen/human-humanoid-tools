@@ -66,6 +66,7 @@ _DATASET_TO_REFERENCE: dict[str, str] = {
     "motion_x": "smplx",
     "phuma": "smpl",
     "lafan": "lafan_bvh",
+    "mocap": "mocap_bvh",
     "soma": "soma_bvh",
     "xsens_mocap": "xsens_mocap",
     "gvhmr": "gvhmr",
@@ -1262,6 +1263,9 @@ def create_app(
             traj = serialize_robot_trajectory(
                 model, ret, scaled_preview=scaled,
             )
+            scaled = _align_scaled_preview_to_robot_playback(
+                model, ret, scaled, traj,
+            )
             scaled_scene = _compute_scaled_scene(
                 model, robot, motion, reference, human_height,
             )
@@ -1911,7 +1915,7 @@ def create_app(
             traj = serialize_robot_trajectory(
                 tgt, ret, scaled_preview=scaled, ground_follow=False,
             )
-            scaled = _align_r2r_scaled_preview_to_ground(tgt, ret, scaled, traj)
+            scaled = _align_scaled_preview_to_robot_playback(tgt, ret, scaled, traj)
             from hhtools.web.r2r_export_bundle import clip_has_export_scene
             from hhtools.web.r2r_scene import compute_r2r_target_scaled_scene
 
@@ -2329,7 +2333,7 @@ def _set_batch_job_progress(
 
 
 def _job_is_batch(job: Job | None) -> bool:
-    return job is not None and job.kind == "batch"
+    return job is not None and job.kind in ("batch", "r2r_batch")
 
 
 def _build_r2r_calibration_session(target_model, source_model) -> dict:
@@ -2415,7 +2419,7 @@ def _compute_r2r_scaled_preview(source_model, target_model, motion, calibrated_j
     )
 
 
-def _align_r2r_scaled_preview_to_ground(
+def _align_scaled_preview_to_robot_playback(
     target_model,
     retargeted,
     scaled_preview: dict,
@@ -2859,6 +2863,13 @@ def _run_r2r_batch_job(job: Job, body: dict, state: SessionState) -> None:
                 )
                 continue
             try:
+                _set_batch_job_progress(
+                    job,
+                    f"导出 {stem} · {i + 1}/{total}",
+                    i / max(1, total),
+                    batch_t0,
+                    clip_progress=0.99,
+                )
                 subdir = _batch_export_subdir(e)
                 out_path = _write_r2r_export(
                     ret, tgt, motion, out_dir,
@@ -3316,8 +3327,10 @@ def _ground_motion_for_web(motion):
     """
     try:
         from hhtools.core.coord import to_up_axis
+        from hhtools.retarget.newton_basic.rest_pose import normalize_mocap_bvh_clip
         from hhtools.viewer.anatomy import center_motion_root_xy, snap_motion_to_ground
 
+        motion = normalize_mocap_bvh_clip(motion)
         if motion.up_axis != "Z":
             motion = to_up_axis(motion, "Z")
         motion = center_motion_root_xy(motion)
@@ -3933,6 +3946,17 @@ def _compute_scaled_scene(
         hf_robot = motion.terrain.scaled(ratio, z_offset=z_terrain)
         if abs(z_correction) > 1e-6:
             hf_robot = hf_robot.shifted(dz=z_correction)
+        # PARC's ``*_foot`` joints are ankles sitting a fixed offset above the
+        # sole contact surface, so ``terrain_data`` (authored to the sole) ends
+        # up that much below the foot joints / robot mesh sole the viewer snaps
+        # to them.  Lift parc_ms terrain by the scaled offset so the surface,
+        # the yellow skeleton foot, and the robot sole coincide.
+        if isinstance(motion.meta, dict) and motion.meta.get("dataset") == "parc_ms":
+            from hhtools.io.parc_ms_skeleton import PARC_MS_FOOT_CONTACT_OFFSET_M
+
+            hf_robot = hf_robot.shifted(
+                dz=float(PARC_MS_FOOT_CONTACT_OFFSET_M) * ratio,
+            )
         payload["terrain"] = _serialize_terrain(hf_robot)
     return payload
 

@@ -434,9 +434,15 @@ def write_retarget_export_bundle(
     if not has_scene and fmt == "csv":
         return clip_dir / f"{stem}.csv"
 
-    archive = shutil.make_archive(str(out_root / stem), "zip", root_dir=str(clip_dir))
+    if not has_scene:
+        return clip_dir / (f"{stem}.pkl" if fmt == "pkl" else f"{stem}.csv")
+
+    # ``make_archive(out_root/stem, root_dir=clip_dir)`` hangs when
+    # ``clip_dir == out_root`` (batch upload layout: ``out/sub10/sub10/``):
+    # the ``.zip`` is created *inside* the tree being walked and gets re-
+    # included.  ``zip_directory`` always writes the archive beside ``clip_dir``.
+    zip_path = zip_directory(clip_dir, stem)
     shutil.rmtree(clip_dir, ignore_errors=True)
-    zip_path = Path(archive)
     _log.info(
         "export bundle %s (meshes=%s, object_tracks=%s)",
         zip_path.name,

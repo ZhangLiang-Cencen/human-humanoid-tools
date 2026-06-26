@@ -82,7 +82,7 @@ _CALIBRATION_REFERENCE_LEGACY: dict[str, str] = {
 }
 
 _VALID_CALIBRATION_REFERENCES: frozenset[str] = frozenset(
-    {"smplx", "smpl", "gvhmr", "soma_bvh", "lafan_bvh", "xsens_mocap", "glb"}
+    {"smplx", "smpl", "gvhmr", "soma_bvh", "lafan_bvh", "mocap_bvh", "xsens_mocap", "glb"}
 )
 
 # Canonical adult-human stature (metres) used by
@@ -347,6 +347,70 @@ def load_calibration(path: str | Path) -> RobotRetargetCalibration:
         calibrated_joint_q={str(k): float(v) for k, v in joint_q.items()},
         notes=str(data.get("notes", "")),
     )
+
+
+_STRAIGHT_T_ARM_REFERENCES: tuple[str, ...] = (
+    "lafan_bvh",
+    "mocap_bvh",
+    "xsens_mocap",
+    "smpl",
+    "smplx",
+    "gvhmr",
+)
+
+_TPOSE_ARM_JOINTS: tuple[str, ...] = (
+    "left_shoulder_roll_joint",
+    "right_shoulder_roll_joint",
+    "left_elbow_joint",
+    "right_elbow_joint",
+)
+
+
+def repair_apose_calibration_for_straight_t_reference(
+    calibration: RobotRetargetCalibration,
+    robot_preset_dir: str | Path,
+) -> RobotRetargetCalibration:
+    """Borrow T-pose arm angles from a sibling calibration when needed.
+
+    Straight-arm references (LAFAN / mocap bundled T-pose, SMPL T-pose, …)
+    require shoulder roll ≈ ±π/2.  Legacy calibrations saved against an
+    A-pose overlay (roll ≈ 0) freeze the arms; this helper copies arm
+    joint values from another reference calibration in the same preset dir.
+    """
+
+    from dataclasses import replace
+
+    ref = normalize_calibration_reference(str(calibration.reference))
+    if ref == "soma_bvh" or ref not in _STRAIGHT_T_ARM_REFERENCES:
+        return calibration
+
+    roll = float(calibration.calibrated_joint_q.get("left_shoulder_roll_joint", 0.0))
+    if abs(roll) > 0.5:
+        return calibration
+
+    preset_dir = Path(robot_preset_dir)
+    for donor_ref in _STRAIGHT_T_ARM_REFERENCES:
+        if donor_ref == ref:
+            continue
+        donor_path = resolve_calibration_file(preset_dir, donor_ref)
+        if donor_path is None:
+            continue
+        try:
+            donor = load_calibration(donor_path)
+        except (OSError, ValueError):
+            continue
+        if donor.robot != calibration.robot:
+            continue
+        donor_roll = float(donor.calibrated_joint_q.get("left_shoulder_roll_joint", 0.0))
+        if abs(donor_roll) < 0.5:
+            continue
+        patched = dict(calibration.calibrated_joint_q)
+        for key in _TPOSE_ARM_JOINTS:
+            if key in donor.calibrated_joint_q:
+                patched[key] = donor.calibrated_joint_q[key]
+        return replace(calibration, calibrated_joint_q=patched)
+
+    return calibration
 
 
 # ---------------------------------------------------------------------------
@@ -784,6 +848,12 @@ def build_scaler_config_from_calibration(
 
     from dataclasses import replace as _dc_replace
 
+    preset_dir = getattr(getattr(model, "preset", None), "root_dir", None)
+    if preset_dir is not None:
+        calibration = repair_apose_calibration_for_straight_t_reference(
+            calibration, preset_dir,
+        )
+
     from hhtools.retarget.newton_basic.human_aliases import (
         is_meshmimic_holosoma_like,
         is_smpl_like,
@@ -799,28 +869,29 @@ def build_scaler_config_from_calibration(
 
     _ref = str(calibration.reference).lower()
 
+    from hhtools.retarget.newton_basic.rest_pose import normalize_mocap_bvh_clip
+
+    clip = normalize_mocap_bvh_clip(clip)
+
     # SOMA: always use the bundled zero-frame BVH (soma-retargeter convention),
     # not the loaded clip's frame 0.
     if _ref == "soma_bvh" and bundled_reference_bvh_path(_ref) is not None:
         rest_pose = rest_pose_from_bundled_reference("soma_bvh")
     elif _ref == "xsens_mocap" and bundled_reference_bvh_path(_ref) is not None:
         rest_pose = rest_pose_from_bundled_reference("xsens_mocap")
+    elif _ref == "lafan_bvh" and bundled_reference_bvh_path(_ref) is not None:
+        # Bundled ``lafan_zero_frame0.bvh`` stays clip-independent for the blue
+        # calibration overlay.  Scaler offsets must come from the clip's frame 0
+        # as a *whole* skeleton — patching only leg quats onto bundled T-pose
+        # positions leaves hips ~180° from the legs' bind frame and IK flips feet.
+        rest_pose = rest_pose_from_motion(
+            clip,
+            frame=0,
+            source_tag="build_scaler_config_from_calibration_lafan_frame0",
+        )
+    elif _ref == "mocap_bvh" and bundled_reference_bvh_path(_ref) is not None:
+        rest_pose = rest_pose_from_bundled_reference("mocap_bvh")
     elif _ref == "lafan_bvh":
-        # LAFAN / Mixamo BVH: reconstruct the rig's **bind T-pose** from the
-        # clip's own bone lengths (zero local rotations → FK), the same
-        # synthesiser SMPL uses.  Two reasons not to use clip frame 0:
-        #
-        #   * Sport / action captures start in an A-pose "ready" stance, so
-        #     frame 0 is NOT rest.  Using it makes a zero delta map to the
-        #     calibrated T-pose, so the robot's arms snap out to T while the
-        #     yellow overlay still shows the source A-pose.
-        #
-        # And not the bundled canonical reference (``rest_pose_from_reference``)
-        # either: its 17-joint generic proportions don't match the subject's
-        # actual leg/arm lengths, which warps the per-limb scales and crosses
-        # the robot's legs.  Reconstructing from the clip keeps the subject's
-        # true proportions while giving the arms-out T-pose the calibration
-        # was authored against.
         rest_pose = rest_pose_from_motion_bind(
             clip, source_tag="build_scaler_config_from_calibration_lafan_bind"
         )
@@ -861,7 +932,7 @@ def build_scaler_config_from_calibration(
     # via :data:`_CANONICAL_HUMAN_HEIGHT_M` if a future preset (children,
     # very tall reference humans) needs a different normalisation.
     if _ref in (
-        "smpl", "smplx", "gvhmr", "soma_bvh", "lafan_bvh", "xsens_mocap", "glb",
+        "smpl", "smplx", "gvhmr", "soma_bvh", "lafan_bvh", "mocap_bvh", "xsens_mocap", "glb",
     ):
         rest_pose = _dc_replace(
             rest_pose,
@@ -959,28 +1030,37 @@ def _compute_body_heading_alignment(
 
     # For position-only data, prefer computing forward from the actual motion
     # rather than the synthesized T-pose (whose heading is arbitrary).
-    # Use the first few frames (not median of all frames) because the person
-    # may turn during the motion — we want the initial facing direction.
+    #
+    # BVH bind-open clips (PKO, Xsens exports) also need this: frame-0
+    # shoulders lie on a T-pose axis (forward ≈ ±Y) unrelated to the walk
+    # direction in frames 1+, which otherwise yields a ~180° heading error
+    # and corrupts arm IK targets for the whole clip.
     if reference_motion is not None and ls_src and rs_src:
         _q = np.asarray(reference_motion.quaternions, dtype=np.float32)
         _identity = np.zeros(4, dtype=np.float32)
         _identity[3] = 1.0
         _is_pos_only = float(np.abs(_q[:min(5, _q.shape[0])] - _identity[None, None, :]).max()) < 0.01
-        if _is_pos_only:
+        _use_motion_fwd = _is_pos_only
+        if not _use_motion_fwd:
+            from hhtools.retarget.newton_basic.rest_pose import motion_frame0_is_bind_pose
+
+            _use_motion_fwd = motion_frame0_is_bind_pose(reference_motion)
+        if _use_motion_fwd:
             _bn = list(reference_motion.hierarchy.bone_names)
             if ls_src in _bn and rs_src in _bn:
                 _li = _bn.index(ls_src)
                 _ri = _bn.index(rs_src)
                 _pos = np.asarray(reference_motion.positions, dtype=np.float32)
                 _n_init = min(10, _pos.shape[0])
-                _p_l = np.mean(_pos[:_n_init, _li, :], axis=0)
-                _p_r = np.mean(_pos[:_n_init, _ri, :], axis=0)
+                _start = 1 if _n_init > 1 and not _is_pos_only else 0
+                _p_l = np.mean(_pos[_start:_n_init, _li, :], axis=0)
+                _p_r = np.mean(_pos[_start:_n_init, _ri, :], axis=0)
                 src_fwd = _forward_from_shoulder_axis(_p_l, _p_r)
                 if src_fwd is not None:
                     _log.debug(
-                        "using motion-derived forward for position-only data "
-                        "(first %d frames): %.1f°",
-                        _n_init,
+                        "using motion-derived forward (frames %d..%d): %.1f°",
+                        _start,
+                        _n_init - 1,
                         float(np.degrees(np.arctan2(src_fwd[1], src_fwd[0]))),
                     )
 
@@ -1624,6 +1704,12 @@ def build_scaler_config_soma_style(
         float(q_body_align[3]),
     )
 
+    _ref_key = str(calibration.reference).lower()
+    # Ankle ``q_offset`` is solved from ``LeftFoot`` rest quats with a geometric
+    # toe-yaw splice.  Runtime toe-quat injection on the ankle row breaks that
+    # closure and can flip soles backward on RP1.
+    _lafan_toe = False if _ref_key == "lafan_bvh" else None
+
     return ScalerConfig(
         human_height_assumption=human_height_assumption,
         model_height=float(robot_height),
@@ -1634,6 +1720,7 @@ def build_scaler_config_soma_style(
         root_z_offset=root_z_offset,
         robot_pelvis_height=robot_pelvis_height,
         source_body_quat=source_body_quat,
+        lafan_foot_mod_use_toe_orientation=_lafan_toe,
     )
 
 
@@ -1849,14 +1936,37 @@ def uniform_overlay_scale_for_motion(
     :attr:`~hhtools.retarget.newton_basic.config.ScalerConfig.human_height_assumption`
     (pinned to 1.65 m for SMPL / LAFAN / SOMA references).
 
-    Per-clip measured stature (see :func:`_motion_overlay_stature_m`) is
-    **not** used here: it tracks the raw skeleton height displayed in the
-    Motion tab, so ``robot / measured`` stays near 1.0 and the yellow
-    overlay looks the same size as the unscaled source skeleton.  Headless
-    robots instead hide unmapped head/neck segments in the preview renderer.
+    GLB clips use per-clip measured stature so overlay stride length matches
+    the IK scaler's ``trajectory_scale`` (see
+    :func:`effective_retarget_human_height`).
     """
-    _ = motion
-    return uniform_overlay_scale(scaler_cfg, human_height, ik_map_keys=ik_map_keys)
+    _ = ik_map_keys
+    robot_h = float(scaler_cfg.model_height)
+    h_run = effective_retarget_human_height(human_height, motion, scaler_cfg)
+    return robot_h / max(1e-3, h_run)
+
+
+def effective_retarget_human_height(
+    human_height: float,
+    motion,
+    scaler_cfg: "ScalerConfig | None" = None,
+) -> float:
+    """Runtime human stature for trajectory / overlay scaling on a clip.
+
+    GLB subjects vary in rig height; using the canonical 1.65 m assumption
+    shrinks world root travel (~0.73×) while the yellow overlay already uses
+    measured height (~0.86×), so the robot walks shorter than the overlay.
+    """
+    h_run = float(human_height)
+    if h_run < 0.1 and scaler_cfg is not None:
+        h_run = float(scaler_cfg.human_height_assumption)
+    if motion is not None and str(getattr(motion, "source_format", "")).lower() == "glb":
+        from hhtools.retarget.newton_basic.rest_pose import estimate_skeleton_height
+
+        measured = float(estimate_skeleton_height(motion))
+        if measured > 0.5:
+            h_run = measured
+    return h_run
 
 
 def _estimate_robot_mapped_stature(

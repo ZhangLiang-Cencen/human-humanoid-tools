@@ -539,6 +539,7 @@ class NewtonBasicPipeline:
         self.feet_stabilizer_config = feet_stabilizer_config
         self.config = pipeline_config or PipelineConfig()
         self.human_height = float(human_height)
+        self._active_motion_source_format: str = ""
         # Optional explicit source-joint → canonical rename.  When ``None``
         # we auto-detect SMPL-family rigs at ``run`` time.
         self._source_to_canonical_override = source_to_canonical
@@ -715,7 +716,13 @@ class NewtonBasicPipeline:
                 callback are swallowed so a buggy UI doesn't abort the solve.
         """
         motion = self._ensure_z_up(motion)
+        from hhtools.retarget.newton_basic.rest_pose import normalize_mocap_bvh_clip
+
+        motion = normalize_mocap_bvh_clip(motion)
         motion = self._floor_normalize_motion(motion)
+        self._active_motion_source_format = str(
+            getattr(motion, "source_format", "") or "",
+        ).lower()
         if motion.num_frames == 0:
             return RetargetedMotion(
                 name=motion.name,
@@ -774,11 +781,6 @@ class NewtonBasicPipeline:
             robot_model=self.robot,
         )
 
-        # Source-derived root rotation target (real frames, pre-padding).
-        # Frame-to-frame angular velocity is heading-invariant, so this is a
-        # valid reference for the rate limiter even though it runs before
-        # ``_align_root_to_source_heading``.  Used to cap solved-root spikes
-        # relative to how fast the source root actually rotates.
         _pelvis_col = next(
             (
                 i
@@ -787,6 +789,12 @@ class NewtonBasicPipeline:
             ),
             None,
         )
+
+        # Source-derived root rotation target (real frames, pre-padding).
+        # Frame-to-frame angular velocity is heading-invariant, so this is a
+        # valid reference for the rate limiter even though it runs before
+        # ``_align_root_to_source_heading``.  Used to cap solved-root spikes
+        # relative to how fast the source root actually rotates.
         source_root_quat = (
             ik_targets[:, _pelvis_col, 3:7].astype(np.float32, copy=True)
             if _pelvis_col is not None
@@ -1594,10 +1602,18 @@ class NewtonBasicPipeline:
         cached = self._scaler_by_hierarchy.get(key)
         if cached is not None:
             return cached
+        from hhtools.retarget.calibration.calibration import effective_retarget_human_height
+
+        traj_h: float | None = None
+        if str(getattr(motion, "source_format", "")).lower() == "glb":
+            traj_h = effective_retarget_human_height(
+                self.human_height, motion, self.scaler_config,
+            )
         scaler = HumanToRobotScaler(
             motion.hierarchy,
             self.scaler_config,
             human_height=self.human_height,
+            trajectory_human_height=traj_h,
         )
         self._scaler_by_hierarchy[key] = scaler
         return scaler
@@ -1722,6 +1738,13 @@ class NewtonBasicPipeline:
                 weight = max(entry.r_weight, 5.0) if is_pelvis else 0.0
             else:
                 weight = entry.r_weight
+                # GLB spine maps to hips + chest; dual rotation objectives
+                # over-twist the robot waist.  Track chest by position only.
+                if (
+                    self._active_motion_source_format == "glb"
+                    and entry.canonical_name == "chest"
+                ):
+                    weight = 0.0
             rotation_objectives.append(
                 ik.IKObjectiveRotation(
                     link_index=entry.r_body_index,
@@ -1950,6 +1973,11 @@ class NewtonBasicPipeline:
                 weight = max(entry.r_weight, 5.0) if is_pelvis else 0.0
             else:
                 weight = entry.r_weight
+                if (
+                    self._active_motion_source_format == "glb"
+                    and entry.canonical_name == "chest"
+                ):
+                    weight = 0.0
             rotation_objectives.append(
                 ik.IKObjectiveRotation(
                     link_index=entry.r_body_index,

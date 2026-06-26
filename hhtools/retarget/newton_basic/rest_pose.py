@@ -40,7 +40,7 @@ in without churning consumer code.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -59,9 +59,13 @@ if TYPE_CHECKING:  # pragma: no cover — import only for type checkers
 __all__ = [
     "SourceRestPose",
     "bundled_reference_bvh_path",
+    "motion_frame0_is_bind_pose",
+    "normalize_mocap_bvh_clip",
+    "patch_mocap_bind_quaternions",
     "rest_pose_from_bundled_reference",
     "rest_pose_from_motion",
     "rest_pose_from_motion_bind",
+    "rest_pose_from_motion_tpose",
     "rest_pose_from_reference",
 ]
 
@@ -71,6 +75,8 @@ __all__ = [
 # clip's frame 0 (which may be mid-stride, crouched, etc.).
 _BUNDLED_REFERENCE_BVH: dict[str, str] = {
     "soma_bvh": "soma_zero_frame0.bvh",
+    "lafan_bvh": "lafan_zero_frame0.bvh",
+    "mocap_bvh": "mocap_zero_frame0.bvh",
     "xsens_mocap": "xsens_mocap_zero_frame0.bvh",
 }
 
@@ -85,7 +91,7 @@ def _reference_poses_dir() -> Path | None:
 
 
 def bundled_reference_bvh_path(reference: str) -> Path | None:
-    """Return the bundled zero-frame BVH for ``soma_bvh`` / ``xsens_mocap``."""
+    """Return the bundled zero-frame BVH for a format reference name."""
 
     rel = _BUNDLED_REFERENCE_BVH.get(reference)
     if rel is None:
@@ -97,9 +103,9 @@ def bundled_reference_bvh_path(reference: str) -> Path | None:
     return path if path.is_file() else None
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=4)
 def rest_pose_from_bundled_reference(
-    reference: Literal["soma_bvh", "xsens_mocap"],
+    reference: Literal["soma_bvh", "lafan_bvh", "mocap_bvh", "xsens_mocap"],
 ) -> SourceRestPose:
     """Load a bundled zero-frame BVH as the source rest pose."""
 
@@ -117,6 +123,79 @@ def rest_pose_from_bundled_reference(
         frame=0,
         source_tag=f"bundled_reference:{reference}",
     )
+
+
+def _mixamo_leg_bind_bone_names(bone_names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Leg / foot bones whose BVH bind twist differs from a synthesized T-pose."""
+    names = set(bone_names)
+    toe = "LeftToeBase" if "LeftToeBase" in names else "LeftToe"
+    toe_r = "RightToeBase" if "RightToeBase" in names else "RightToe"
+    return (
+        "LeftUpLeg", "LeftLeg", "LeftFoot", toe,
+        "RightUpLeg", "RightLeg", "RightFoot", toe_r,
+    )
+
+
+def _patch_mixamo_leg_bind_twist(rest: SourceRestPose, motion: "Motion") -> SourceRestPose:
+    """Keep bundled T-pose geometry; swap leg quats to the clip's bind convention.
+
+    Writing patched quats into ``*_zero_frame0.bvh`` corrupts BVH OFFSETs and
+    breaks the calibration blue overlay (positions-only).  Apply this patch in
+    memory for scaler / retarget only.
+    """
+    quat = np.asarray(rest.quaternions, dtype=np.float32).copy()
+    for name in _mixamo_leg_bind_bone_names(rest.bone_names):
+        if name not in rest.bone_names or name not in motion.hierarchy.bone_names:
+            continue
+        ci = motion.hierarchy.bone_names.index(name)
+        ri = rest.bone_names.index(name)
+        quat[ri] = motion.quaternions[0, ci]
+    return replace(rest, quaternions=quat)
+
+
+def _bundled_reference_for_motion(motion: "Motion") -> str | None:
+    """Map a loaded clip to its bundled zero-frame reference name, if any."""
+
+    from hhtools.retarget.newton_basic.human_aliases import (
+        is_mixamo_cmu_like,
+        is_mocap_spine3_bvh_like,
+    )
+
+    names = tuple(motion.hierarchy.bone_names)
+    if is_mocap_spine3_bvh_like(names):
+        return "mocap_bvh"
+    if is_mixamo_cmu_like(names):
+        return "lafan_bvh"
+    return None
+
+
+def rest_pose_from_motion_tpose(motion: "Motion") -> SourceRestPose:
+    """Return the scaler rest pose for a LAFAN / mocap BVH clip.
+
+    Positions come from the bundled ``*_zero_frame0.bvh`` (same upright T-pose
+    layout shown in calibration).  For LAFAN / Mixamo, leg **quaternions** can
+    be patched from the loaded clip's frame 0 so bind twist matches capture;
+    the bundled file itself stays a clean T-pose for the blue calibration overlay.
+
+    Note: :func:`build_scaler_config_from_calibration` uses
+    :func:`rest_pose_from_motion` (frame 0) for LAFAN scaler offsets instead —
+    mixing bundled positions with patched leg quats alone breaks foot IK.
+    """
+
+    ref = _bundled_reference_for_motion(motion)
+    if ref is None:
+        raise ValueError(
+            f"motion {motion.name!r} has no bundled T-pose reference "
+            f"(bone_names={motion.hierarchy.bone_names[:4]}…)"
+        )
+    rest = rest_pose_from_bundled_reference(ref)  # type: ignore[arg-type]
+    if rest.bone_names != tuple(motion.hierarchy.bone_names):
+        raise ValueError(
+            f"bundled rest for {ref!r} bone_names mismatch clip {motion.name!r}"
+        )
+    if ref == "lafan_bvh":
+        rest = _patch_mixamo_leg_bind_twist(rest, motion)
+    return rest
 
 
 @dataclass(frozen=True)
@@ -700,6 +779,94 @@ def rest_pose_from_motion_bind(
         root_name=root_name,
         height_m=height,
         source=source_tag or f"motion_bind_from:{motion.name}",
+    )
+
+
+def motion_frame0_is_bind_pose(motion: "Motion", *, tol: float = 0.01) -> bool:
+    """Return True when frame 0 is a BVH/MOCAP bind (non-root locals ≈ identity).
+
+    Mixamo / Xsens exports often open with every bone in the rig bind pose
+    (arms along ±X, legs straight).  Using a bundled calibration T-pose as
+    the scaler rest while the clip opens in bind leaves arm ``q_offset`` on
+    the wrong baseline (often a 180° shoulder flip vs the bundled reference).
+    """
+
+    q = np.asarray(motion.quaternions[0], dtype=np.float32)
+    parent_idx = np.asarray(motion.hierarchy.parent_indices, dtype=np.int64)
+    identity = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    non_root = 0
+    near_identity = 0
+    for j in range(q.shape[0]):
+        parent = int(parent_idx[j])
+        if parent < 0:
+            continue
+        non_root += 1
+        local_q = Q.normalize(
+            Q.multiply(Q.conjugate(q[parent : parent + 1]), q[j : j + 1])
+        )[0]
+        if (
+            float(np.linalg.norm(local_q - identity)) < tol
+            or float(np.linalg.norm(local_q + identity)) < tol
+        ):
+            near_identity += 1
+    if non_root == 0:
+        return False
+    return near_identity >= max(1, int(0.9 * non_root))
+
+
+def normalize_mocap_bvh_clip(motion: "Motion") -> "Motion":
+    """Drop a leading bind T-pose so frame 0 is motion (PKO / kneel exports).
+
+    Flip / cartwheel clips in ``assets/motions/mimic/MOCAP`` already open on
+    an action frame.  PKO and similar takes prepend one rig-bind frame
+    (non-root locals ≈ identity).  Removing it makes every mocap clip use the
+    same bundled-rest scaler path with frame 0 as the first motion sample.
+    """
+
+    from hhtools.retarget.newton_basic.human_aliases import is_mocap_spine3_bvh_like
+
+    if not is_mocap_spine3_bvh_like(tuple(motion.hierarchy.bone_names)):
+        return motion
+    if motion.num_frames <= 1:
+        return motion
+    if not motion_frame0_is_bind_pose(motion):
+        return motion
+
+    meta = dict(motion.meta or {})
+    meta["mocap_bind_frame_stripped"] = True
+    return replace(
+        motion,
+        positions=np.asarray(motion.positions[1:], dtype=np.float32),
+        quaternions=np.asarray(motion.quaternions[1:], dtype=np.float32),
+        meta=meta,
+    )
+
+
+def patch_mocap_bind_quaternions(
+    rest: SourceRestPose,
+    motion: "Motion",
+) -> SourceRestPose:
+    """Keep bundled T-pose positions; use the clip bind frame-0 quaternions.
+
+    PKO / Xsens exports open in rig bind (local rotations ≈ identity) while
+    calibration uses the bundled ``mocap_zero_frame0`` layout (arm axis often
+    flipped).  Patching quaternions onto bundled positions keeps ``t_offset``
+    aligned with calibration geometry and makes ``q_offset`` close at frame 0.
+    """
+
+    bind = rest_pose_from_motion(
+        motion,
+        frame=0,
+        source_tag="patch_mocap_bind_quaternions",
+    )
+    if bind.bone_names != rest.bone_names:
+        raise ValueError(
+            f"bind quat patch: bone_names mismatch {motion.name!r} vs bundled rest"
+        )
+    return replace(
+        rest,
+        quaternions=np.asarray(bind.quaternions, dtype=np.float32).copy(),
+        source=f"{rest.source}+bind_quats",
     )
 
 

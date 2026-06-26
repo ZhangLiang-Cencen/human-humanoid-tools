@@ -303,9 +303,13 @@ def write_r2r_export_bundle(
     if not has_scene:
         return clip_dir / (f"{stem}.pkl" if fmt == "pkl" else f"{stem}.csv")
 
-    archive = shutil.make_archive(str(out_root / stem), "zip", root_dir=str(clip_dir))
+    # See ``write_retarget_export_bundle`` — avoid zipping a directory into
+    # a ``.zip`` path that lives inside that same directory (R2R batch uploads
+    # where ``out_root.name == stem``).
+    from hhtools.web.export_bundle import zip_directory
+
+    zip_path = zip_directory(clip_dir, stem)
     shutil.rmtree(clip_dir, ignore_errors=True)
-    zip_path = Path(archive)
     _log.info(
         "r2r export bundle %s (ratio=%.4f, meshes=%s, object_tracks=%s)",
         zip_path.name,

@@ -217,6 +217,14 @@ def load_bvh(
         rot_quat = Q.from_matrix(rot_mat)
         quats = Q.multiply(np.broadcast_to(rot_quat, quats.shape), quats)
 
+    bvh_rotation_orders: dict[str, str] = {}
+    for j in joints:
+        if j.is_end_site:
+            continue
+        rot_order = _rotation_order_from_channels(j.channels)
+        if rot_order:
+            bvh_rotation_orders[j.name] = rot_order
+
     report_progress(progress_callback, 1.0, f"BVH 加载完成 ({path.name})")
     return Motion(
         name=path.stem,
@@ -232,6 +240,7 @@ def load_bvh(
             "source_up_axis": "Y",
             "frame_time": frame_time,
             "num_channels": channel_count,
+            "bvh_rotation_orders": bvh_rotation_orders,
         },
     )
 
@@ -242,12 +251,18 @@ def load_bvh(
 def save_bvh(motion: Motion, path: str | Path, *, degrees: bool = True) -> None:
     """Write a :class:`Motion` to a minimal BVH file.
 
-    This writer is intentionally simple: it re-projects global transforms back into parent-local
-    frames and emits a ZYX intrinsic rotation order with a 6-channel root. It does not attempt to
-    preserve the original channel order of a BVH that was previously imported.
+    Re-projects global transforms into parent-local frames.  When
+    ``motion.meta[\"bvh_rotation_orders\"]`` is present (populated by
+    :func:`load_bvh`), the original per-joint rotation channel order is
+    preserved so round-tripped clips stay quaternion-compatible with their
+    source dialect (e.g. MOCAP ``YXZ`` vs LAFAN ``ZYX``).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    rot_orders: dict[str, str] = dict(
+        motion.meta.get("bvh_rotation_orders") or {}
+    )
 
     # Compute local transforms via inverse FK at rest.
     local_positions, local_quats = _inverse_forward_kinematics(
@@ -257,19 +272,22 @@ def save_bvh(motion: Motion, path: str | Path, *, degrees: bool = True) -> None:
     lines: list[str] = ["HIERARCHY"]
     roots = motion.hierarchy.root_indices()
 
+    def _channels_line(is_root: bool, bone_name: str) -> str:
+        order = rot_orders.get(bone_name, "ZYX")
+        rot_names = [f"{axis}rotation" for axis in order]
+        if is_root:
+            return "CHANNELS 6 Xposition Yposition Zposition " + " ".join(rot_names)
+        return "CHANNELS 3 " + " ".join(rot_names)
+
     def write_joint(idx: int, depth: int, is_root: bool) -> None:
         pad = "\t" * depth
         label = "ROOT" if is_root else "JOINT"
-        lines.append(f"{pad}{label} {motion.hierarchy.bone_names[idx]}")
+        bone_name = motion.hierarchy.bone_names[idx]
+        lines.append(f"{pad}{label} {bone_name}")
         lines.append(f"{pad}{{")
         offs = local_positions[0, idx]
         lines.append(f"{pad}\tOFFSET {offs[0]:.6f} {offs[1]:.6f} {offs[2]:.6f}")
-        if is_root:
-            lines.append(
-                f"{pad}\tCHANNELS 6 Xposition Yposition Zposition Zrotation Yrotation Xrotation"
-            )
-        else:
-            lines.append(f"{pad}\tCHANNELS 3 Zrotation Yrotation Xrotation")
+        lines.append(f"{pad}\t{_channels_line(is_root, bone_name)}")
         children = motion.hierarchy.children(idx)
         if children:
             for c in children:
@@ -288,16 +306,21 @@ def save_bvh(motion: Motion, path: str | Path, *, degrees: bool = True) -> None:
     lines.append(f"Frames: {motion.num_frames}")
     lines.append(f"Frame Time: {1.0 / motion.framerate:.8f}")
 
-    # Encode each frame: root (pos + ZYX euler) + children (ZYX euler)
+    # Encode each frame: root (pos + per-joint euler order) + children.
     for f in range(motion.num_frames):
         row: list[str] = []
         for idx in _dfs_order(motion.hierarchy):
             lp = local_positions[f, idx]
             lq = local_quats[f, idx]
-            euler_zyx = _quat_to_euler_zyx(lq, degrees=degrees)
+            bone_name = motion.hierarchy.bone_names[idx]
+            order = rot_orders.get(bone_name, "ZYX")
+            euler = np.asarray(
+                R.quat_to_bvh_euler_for_write(lq, order, degrees=degrees),
+                dtype=np.float64,
+            ).reshape(3)
             if motion.hierarchy.is_root(idx):
                 row.extend([f"{lp[0]:.6f}", f"{lp[1]:.6f}", f"{lp[2]:.6f}"])
-            row.extend([f"{euler_zyx[0]:.6f}", f"{euler_zyx[1]:.6f}", f"{euler_zyx[2]:.6f}"])
+            row.extend([f"{euler[0]:.6f}", f"{euler[1]:.6f}", f"{euler[2]:.6f}"])
         lines.append(" ".join(row))
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -437,6 +460,17 @@ def _dfs_order(hierarchy: Hierarchy) -> list[int]:
         order.append(i)
         children = hierarchy.children(i)
         stack.extend(reversed(children))
+    return order
+
+
+def _rotation_order_from_channels(channels: list[str]) -> str:
+    """Extract intrinsic rotation order from a BVH ``CHANNELS`` list."""
+
+    order = ""
+    for ch in channels:
+        lc = ch.lower()
+        if lc.endswith("rotation"):
+            order += lc[0].upper()
     return order
 
 

@@ -166,6 +166,8 @@ def _suggested_calibration_reference(
             return "soma_bvh"
         if ds in ("lafan", "lafan1"):
             return "lafan_bvh"
+        if ds == "mocap":
+            return "mocap_bvh"
         if ds == "xsens_mocap":
             return "xsens_mocap"
     from hhtools.retarget.newton_basic.human_aliases import (
@@ -178,6 +180,7 @@ def _suggested_calibration_reference(
         "SOMA BVH": "soma_bvh",
         "Holosoma / SMPL-H mocap": "smpl",
         "Mixamo/CMU/LAFAN": "lafan_bvh",
+        "MOCAP BVH (Spine3 chest)": "mocap_bvh",
         "Xsens mocap BVH": "xsens_mocap",
     }.get(rig)
 
@@ -728,6 +731,9 @@ def run_viewer(
         return thread
 
     def _apply_settings_to_motion(m: Motion) -> Motion:
+        from hhtools.retarget.newton_basic.rest_pose import normalize_mocap_bvh_clip
+
+        m = normalize_mocap_bvh_clip(m)
         if m.up_axis != "Z":
             m = to_up_axis(m, "Z")
         if center_xy.value:
@@ -2607,15 +2613,15 @@ def _build_robot_tab(  # type: ignore[no-untyped-def]
             "Reference pose",
             options=(
                 "smplx", "smpl", "gvhmr",
-                "soma_bvh", "lafan_bvh",
+                "soma_bvh", "lafan_bvh", "mocap_bvh", "xsens_mocap",
                 "glb",
             ),
             initial_value="smpl",
             hint=(
                 "smpl / smplx = canonical zero-pose (same joint layout as "
                 "SMPL-family clips: AMASS, Motion-X, PHUMA, GVHMR, …); "
-                "soma_bvh / lafan_bvh = format-specific rest poses; "
-                "glb = frame 0 of the clip loaded in the viewer."
+                "soma_bvh / lafan_bvh / mocap_bvh / xsens_mocap = format-specific "
+                "rest poses; glb = frame 0 of the clip loaded in the viewer."
             ),
         )
         calib_show_labels = server.gui.add_checkbox(
@@ -3458,23 +3464,21 @@ def _build_robot_tab(  # type: ignore[no-untyped-def]
                 )
 
                 src_pos_full = np.asarray(clip.positions, dtype=np.float32).copy()
+                src_quat_full = np.asarray(clip.quaternions, dtype=np.float32).copy()
                 z_min_uniform = float(human_source_floor_z_world(clip))
                 src_pos_full[:, :, 2] -= z_min_uniform
                 src_pos_full *= smpl_scale
-                if not motion_has_interaction_scene(clip):
-                    from hhtools.web.scaled_preview import (
-                        resolve_scaled_overlay_z_correction,
-                    )
+                from hhtools.web.scaled_preview import (
+                    resolve_scaled_overlay_z_correction,
+                )
 
-                    z_corr = float(
-                        resolve_scaled_overlay_z_correction(
-                            clip, scaler, smpl_scale,
-                        )
+                z_corr = float(
+                    resolve_scaled_overlay_z_correction(
+                        clip, scaler, smpl_scale,
                     )
-                    if abs(z_corr) > 1e-6:
-                        src_pos_full[:, :, 2] += np.float32(z_corr)
-
-                src_quat_full = np.asarray(clip.quaternions, dtype=np.float32).copy()
+                )
+                if abs(z_corr) > 1e-6:
+                    src_pos_full[:, :, 2] += np.float32(z_corr)
 
                 hname_to_idx_uniform = {
                     n: i for i, n in enumerate(clip.hierarchy.bone_names)
@@ -3488,7 +3492,6 @@ def _build_robot_tab(  # type: ignore[no-untyped-def]
                     hname_to_idx_uniform.get(n, _root_idx) for n in jn
                 ]
                 mapped_src_idx = np.asarray(_src_idx_list, dtype=np.int64)
-
                 pos_m = src_pos_full[:, mapped_src_idx, :].astype(
                     np.float32, copy=True,
                 )

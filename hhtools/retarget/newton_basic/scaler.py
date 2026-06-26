@@ -206,6 +206,7 @@ class HumanToRobotScaler:
         config: ScalerConfig,
         *,
         human_height: float,
+        trajectory_human_height: float | None = None,
     ) -> None:
         if human_height <= 0.0:
             raise ValueError(f"human_height must be positive; got {human_height}")
@@ -313,7 +314,11 @@ class HumanToRobotScaler:
         # shortened afterwards.
         model_h = float(config.model_height)
         if np.isfinite(model_h) and model_h > 0.01:
-            traj_h = float(self._human_height)
+            traj_h = float(
+                trajectory_human_height
+                if trajectory_human_height is not None
+                else self._human_height
+            )
             self._trajectory_scale = model_h / max(1e-3, traj_h)
         else:
             self._trajectory_scale = 1.0

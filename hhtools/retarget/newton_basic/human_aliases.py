@@ -182,6 +182,7 @@ MIXAMO_CMU_TO_CANONICAL: Mapping[str, str] = {
     "Spine": "spine",
     "Spine1": "spine",
     "Spine2": "chest",
+    "Spine3": "chest",
     "Neck": "neck",
     "Head": "head",
     "LeftShoulder": "left_collar",
@@ -511,6 +512,21 @@ def is_mixamo_cmu_like(joint_names: Iterable[str]) -> bool:
     return "hips" in normalised and "leftupleg" in normalised
 
 
+def is_mocap_spine3_bvh_like(joint_names: Iterable[str]) -> bool:
+    """Heuristic: Mixamo-style leg chain plus a fourth spine segment ``Spine3``.
+
+    meshmimic / 20260429 mocap exports parent shoulders off ``Spine3`` rather
+    than ``Spine2``; treating them like plain LAFAN mis-anchors chest IK.
+    """
+    names = set(joint_names)
+    return (
+        "Hips" in names
+        and "LeftUpLeg" in names
+        and "Spine3" in names
+        and "Spine2" in names
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fuzzy (prefix-stripped) matching
 # ---------------------------------------------------------------------------
@@ -603,6 +619,13 @@ def auto_source_to_canonical(
         # anatomically the chest — promote it when Spine2 is absent.
         if "Spine2" not in names and "Spine1" in names:
             result["Spine1"] = "chest"
+        return result
+
+    if is_mocap_spine3_bvh_like(names):
+        result = {n: MIXAMO_CMU_TO_CANONICAL.get(n, n) for n in names}
+        # Four-segment spine: shoulders parent from Spine3, not Spine2.
+        result["Spine2"] = "spine"
+        result["Spine3"] = "chest"
         return result
 
     if is_mixamo_cmu_like(names):
@@ -721,6 +744,8 @@ def list_detected_rig_type(joint_names: Iterable[str]) -> str:
         return "Xsens mocap BVH"
     if is_meshmimic_holosoma_like(names):
         return "Holosoma / SMPL-H mocap"
+    if is_mocap_spine3_bvh_like(names):
+        return "MOCAP BVH (Spine3 chest)"
     if is_mixamo_cmu_like(names):
         return "Mixamo/CMU/LAFAN"
     yaml_map = _try_yaml_override(names)
@@ -750,6 +775,7 @@ __all__ = [
     "invalidate_yaml_cache",
     "is_meshmimic_holosoma_like",
     "is_mixamo_cmu_like",
+    "is_mocap_spine3_bvh_like",
     "is_smpl_like",
     "is_soma_bvh_like",
     "is_xsens_mocap_like",

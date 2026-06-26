@@ -30,6 +30,83 @@ def euler_xyz_to_quat(euler: NDArray, degrees: bool = False) -> NDArray:
     return np.stack([qx, qy, qz, qw], axis=-1).astype(np.float32)
 
 
+def quat_to_bvh_euler(
+    quat: NDArray,
+    order: str,
+    *,
+    degrees: bool = True,
+) -> NDArray:
+    """Convert an xyzw quaternion to BVH-style intrinsic Euler angles.
+
+    Prefer :func:`quat_to_bvh_euler_for_write` when encoding BVH files that
+    will be read back through :func:`bvh_euler_to_quat`.
+    """
+    if len(order) != 3:
+        raise ValueError(f"Invalid BVH rotation order: {order!r}")
+
+    from scipy.spatial.transform import Rotation as SciRot
+
+    q = np.asarray(quat, dtype=np.float64).reshape(-1, 4)
+    # SciPy expects scalar-last; hhtools uses xyzw.
+    r = SciRot.from_quat(q)
+    euler = r.as_euler(order.lower(), degrees=degrees)
+    return euler.astype(np.float32)
+
+
+def _quat_to_euler_zyx_legacy(quat: NDArray, *, degrees: bool) -> NDArray:
+    """Intrinsic ZYX Euler matching :func:`bvh_euler_to_quat` (``Zrotation Yrotation Xrotation``)."""
+    q = np.asarray(quat, dtype=np.float64).reshape(-1, 4)
+    x, y, z, w = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+    sinp = 2.0 * (w * y - z * x)
+    sinp = np.clip(sinp, -1.0, 1.0)
+    pitch = np.arcsin(sinp)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = np.arctan2(siny_cosp, cosy_cosp)
+    if degrees:
+        roll = np.rad2deg(roll)
+        pitch = np.rad2deg(pitch)
+        yaw = np.rad2deg(yaw)
+    return np.stack([yaw, pitch, roll], axis=-1).astype(np.float32)
+
+
+def quat_to_bvh_euler_for_write(
+    quat: NDArray,
+    order: str,
+    *,
+    degrees: bool = True,
+) -> NDArray:
+    """Encode a local quaternion for :func:`hhtools.io.bvh.save_bvh`.
+
+    ``load_bvh`` decodes MOTION channels with :func:`bvh_euler_to_quat` (legacy
+    axis composition).  SciPy ``as_euler`` is **not** inverse of that decoder
+    for common orders such as ``ZYX``, which broke bundled ``*_zero_frame0.bvh``
+    round-trips for LAFAN.  ``ZYX`` uses the closed-form legacy inverse; other
+    orders fall back to a small least-squares fit against ``bvh_euler_to_quat``.
+    """
+    if len(order) != 3:
+        raise ValueError(f"Invalid BVH rotation order: {order!r}")
+    if order.upper() == "ZYX":
+        return _quat_to_euler_zyx_legacy(quat, degrees=degrees)
+
+    from scipy.optimize import least_squares
+
+    q = np.asarray(quat, dtype=np.float64).reshape(4)
+    x0 = quat_to_bvh_euler(q, order, degrees=degrees).reshape(3)
+
+    def _residual(x: NDArray) -> NDArray:
+        q2 = np.asarray(bvh_euler_to_quat(x, order, degrees=degrees), dtype=np.float64).reshape(4)
+        d1 = q - q2
+        d2 = q + q2
+        return d1 if float(np.dot(d1, d1)) < float(np.dot(d2, d2)) else d2
+
+    result = least_squares(_residual, x0, method="lm", max_nfev=100)
+    return result.x.astype(np.float32)
+
+
 def bvh_euler_to_quat(angles: NDArray, order: str, degrees: bool = True) -> NDArray:
     """Convert BVH-style Euler angles to a quaternion.
 

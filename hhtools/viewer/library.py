@@ -45,6 +45,7 @@ _DIR_TO_ADAPTER: dict[str, str] = {
     "phuma": "phuma",
     "lafan": "lafan",
     "lafan1": "lafan",
+    "mocap": "mocap",
     "soma": "soma",
     "xsens": "xsens_mocap",
     "xsensmocap": "xsens_mocap",

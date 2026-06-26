@@ -1579,8 +1579,12 @@ const player = {
   _applyFrac(frac) {
     if (r2r.calibrating || (state.calibrationMode && !r2r.active)) return;
     this._heavyTick = (this._heavyTick + 1) % 2;
+    const robotReady = Boolean(robot.trajectory && robot.trajectory.frames?.length);
     for (const v of ALL_VIEWS) {
       if (v.numFrames <= 0) continue;
+      // Yellow overlay / scaled env only track playback once retarget has produced
+      // a robot trajectory; otherwise they animate against a frozen robot pose.
+      if ((v === scaledSkel || v === scaledEnv) && !robotReady) continue;
       // env views animate even when "invisible" to the HUD — except scaledEnv
       // which follows its toggle.
       if (!v.group.visible) continue;
@@ -1732,10 +1736,16 @@ async function refreshScaledPreview() {
     if (data.scaled_scene) {
       scaledEnv.load(data.scaled_scene, state.motion.token);
       btnEnv.disabled = false;
-      setViewVisible(scaledEnv, "tg-scaled-env", true);
     } else {
       scaledEnv.clear();
       btnEnv.disabled = true;
+    }
+    // Preload yellow overlay data but keep it hidden until a retarget completes
+    // (or the user explicitly toggles it on).  Playing motion against a frozen
+    // calibration / zero robot makes the overlay look collapsed inside the mesh.
+    if (!state.robotTrajectory) {
+      setViewVisible(scaledSkel, "tg-scaled", false);
+      setViewVisible(scaledEnv, "tg-scaled-env", false);
     }
     if (player.active) player.refreshFrame();
   } catch (e) {
@@ -1772,6 +1782,7 @@ const REFERENCE_LABELS = {
   gvhmr: "GVHMR",
   soma_bvh: "SOMA BVH",
   lafan_bvh: "LAFAN / Mixamo BVH",
+  mocap_bvh: "MOCAP BVH (Spine3 chest)",
   xsens_mocap: "Xsens mocap BVH",
   glb: "GLB / GLTF",
 };
@@ -1782,6 +1793,7 @@ const DATASET_TO_REFERENCE = {
   motion_x: "smplx",
   phuma: "smpl",
   lafan: "lafan_bvh",
+  mocap: "mocap_bvh",
   soma: "soma_bvh",
   xsens_mocap: "xsens_mocap",
   gvhmr: "gvhmr",
@@ -1806,6 +1818,7 @@ function referenceLabel(ref) {
 const DATASET_LABELS = {
   soma: "SOMA BVH",
   lafan: "LAFAN / Mixamo BVH",
+  mocap: "MOCAP BVH (Spine3 chest)",
   xsens_mocap: "Xsens mocap BVH",
   amass: "AMASS (SMPL 参数)",
   motion_x: "Motion-X (SMPL-X)",
@@ -1833,6 +1846,11 @@ const REFERENCE_HELP = {
     input: "LAFAN / Mixamo 风格 .bvh（如 Hips、LeftLeg）",
     calib: "标定参考「LAFAN / Mixamo BVH」— 对齐<b>蓝色 LAFAN 参考骨架</b>",
     file: "retarget_calibration_lafan_bvh.yaml",
+  },
+  mocap_bvh: {
+    input: "四节脊柱 MOCAP .bvh（Hips、Spine3 挂肩、LeftToeBase）",
+    calib: "标定参考「MOCAP BVH」— 对齐<b>蓝色 MOCAP 参考骨架</b>（Spine3 = chest）",
+    file: "retarget_calibration_mocap_bvh.yaml",
   },
   xsens_mocap: {
     input: "Xsens MVN / 生物力学 .bvh（如 Hips、LeftHip、LeftKnee、Chest）",
@@ -3769,7 +3787,14 @@ document.getElementById("calib-save").onclick = async () => {
     await exitCalibrationMode();
     document.getElementById("calib-card").style.display = "none";
     state.calibration = true;
+    // Robot still holds the last calibration FK pose until retarget supplies a
+    // trajectory; do not resume motion playback with the yellow overlay yet.
+    player.setPlaying(false);
+    robot.applyStatic();
+    setViewVisible(scaledSkel, "tg-scaled", false);
+    setViewVisible(scaledEnv, "tg-scaled-env", false);
     refreshRetargetPanel();
+    toast("标定已保存 — 请点击 Retarget 后再播放预览");
   } catch (e) { toast(e.message, true); }
 };
 
